@@ -214,8 +214,6 @@ class Config:
             raise ConfigError("FACT_EVERY muss mindestens 1 sein.")
         if self.daily_reply_limit < 0:
             raise ConfigError("DAILY_REPLY_LIMIT darf nicht negativ sein (0 = kein Limit).")
-        if not self.texts.disclosure.strip():
-            raise ConfigError("Der KI-Hinweis darf nicht leer sein.")
         if "{shop_name}" in self.texts.disclosure:
             raise ConfigError("TEXT_DISCLOSURE enthält {shop_name}, aber SHOP_NAME ist nicht gesetzt.")
         if self.mode == "shop":
