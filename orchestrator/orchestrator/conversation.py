@@ -229,11 +229,6 @@ class ConversationManager:
             return True
         return False
 
-    async def _reply(self, user_id: int, new_messages: int) -> None:
-        user = await self._repo.get_user(user_id)
-        if user is None or not user.ai_enabled:
-            return
-
         if user.disclosed_at is None:
             if not await self._notice(user_id, self._cfg.texts.disclosure):
                 return  # pausiert oder Gateway nicht erreichbar: später erneut versuchen
