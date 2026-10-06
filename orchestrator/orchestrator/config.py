@@ -19,8 +19,7 @@ class ConfigError(RuntimeError):
 
 
 # KI-Hinweis (TEXT_DISCLOSURE) und Bezahlschranke (TEXT_PAYWALL) haben bewusst keinen
-# Standardtext: Sie werden pro Installation in der .env gesetzt. Der KI-Hinweis ist Pflicht,
-# ohne ihn startet der Orchestrator nicht. Vorlagen stehen in .env.chat.example / .env.shop.example.
+# Standardtext: Sie werden pro Installation in der .env gesetzt. Vorlagen stehen in .env.chat.example / .env.shop.example.
 DEFAULT_PAYMENT_CONFIRM = "Danke, die Zahlung ist angekommen! Dein Guthaben: {balance} Antworten."
 DEFAULT_STOP = "Okay, ab jetzt antwortet hier keine KI mehr. Mit /start geht es wieder weiter."
 DEFAULT_START = "Die KI-Antworten sind wieder an."
@@ -160,10 +159,6 @@ class Config:
         )
         if shop_name:
             texts = replace(texts, disclosure=texts.disclosure.replace("{shop_name}", shop_name))
-        if not texts.disclosure.strip():
-            raise ConfigError(
-                "TEXT_DISCLOSURE (KI-Hinweis beim ersten Kontakt) muss in der .env gesetzt sein."
-            )
         if mode == "chat" and "{link}" not in texts.paywall:
             raise ConfigError("TEXT_PAYWALL muss gesetzt sein und den Platzhalter {link} enthalten.")
 
