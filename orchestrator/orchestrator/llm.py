@@ -28,17 +28,7 @@ PRODUKTBERATUNG FÜR {shop_name}
 - Wenn du ein Produkt nennst, schreib seine ID in doppelten eckigen Klammern, z. B. [[abc-123]].
   Name und Link werden automatisch eingesetzt. Schreib selbst keine Links.
 - Erfinde keine Produkte, Preise, Rabatte, Lieferzeiten oder Eigenschaften. Was nicht im
-  Katalog steht, weißt du nicht. Sag das ehrlich und verweise auf den Shop.
-- Empfiehl höchstens drei Produkte pro Antwort und nur, wenn sie zur Frage passen.
-- Dräng niemanden zum Kauf und erzeuge keinen künstlichen Zeitdruck."""
-
-# Gilt in jedem Modus und ist nicht abschaltbar: Der Account sieht aus wie ein normaler
-# Nutzer, deshalb darf die KI nie leugnen, eine zu sein.
-HONESTY_RULES = """\
-GRENZEN
-- Wenn der Nutzer ernsthaft wissen will, ob er mit einem Menschen oder einer KI schreibt,
-  sag ehrlich, dass du eine KI bist. Behaupte nie, ein Mensch zu sein.
-- Frag nicht nach Passwörtern, Kontodaten, Adressen oder Ausweisdaten."""
+  Katalog steht, weißt du nicht. Sag das ehrlich und verweise auf den Shop."""
 
 QUERY_MESSAGES = 3  # so viele letzte Nutzernachrichten bestimmen die Katalogauswahl
 
