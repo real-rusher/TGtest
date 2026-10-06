@@ -16,3 +16,18 @@ class ProductNotFound(RepositoryError):
 
 class InvalidFact(RepositoryError):
     pass
+
+
+class InvalidMessage(RepositoryError):
+    pass
+
+
+class PaymentNotFound(RepositoryError):
+    def __init__(self, provider: str, provider_ref: str):
+        super().__init__(f"Zahlung {provider}:{provider_ref} ist unbekannt")
+        self.provider = provider
+        self.provider_ref = provider_ref
+
+
+class PaymentMismatch(RepositoryError):
+    """Betrag oder Waehrung der gemeldeten Zahlung passen nicht zum angelegten Auftrag."""

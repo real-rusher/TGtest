@@ -1,0 +1,12 @@
+.env
+config/persona.md
+config/products.json
+config/catalog.json
+data/
+*.session
+*.session-journal
+__pycache__/
+*.egg-info/
+.venv/
+.pytest_cache/
+dump.rdb

@@ -1,18 +1,19 @@
-"""Kapselndes Repository: der einzige Ort, an dem SQL fuer den Bot steht.
+"""Kapselndes Repository: der einzige Ort, an dem SQL steht.
 
-Kern-API laut Spezifikation:
-    get_user_context(user_id)            -> UserContext | None
-    record_purchase(user_id, product_id) -> PurchaseResult
-    record_memory(user_id, fact_text)    -> MemoryResult
-
-Dazu Hilfsfunktionen, ohne die die Kern-API nicht nutzbar waere
-(User anlegen, Produkte pflegen, Angebote vermerken, KI an/aus).
+Bereiche:
+    User          upsert_user, get_user_context, set_ai_enabled, mark_disclosed, delete_user
+    Gedaechtnis   record_memory
+    Chatverlauf   add_message, get_recent_messages
+    Guthaben      consume_credit, add_credits
+    Katalog       upsert_product, get_product, list_active_products
+    Angebote      record_offer, last_offer_at
+    Zahlungen     create_payment, complete_payment, get_payment
 """
 
 from __future__ import annotations
 
-import json
 import logging
+from datetime import datetime
 from importlib.resources import files
 from typing import Any
 
@@ -20,18 +21,39 @@ import asyncpg
 from redis.asyncio import Redis
 
 from .cache import ContextCache
-from .errors import InvalidFact, ProductNotFound, UserNotFound
-from .models import Memory, MemoryResult, PurchaseEntry, PurchaseResult, User, UserContext
+from .errors import (
+    InvalidFact,
+    InvalidMessage,
+    PaymentMismatch,
+    PaymentNotFound,
+    ProductNotFound,
+    UserNotFound,
+)
+from .models import (
+    ChatMessage,
+    Memory,
+    MemoryResult,
+    Payment,
+    PaymentResult,
+    Product,
+    PurchaseEntry,
+    User,
+    UserContext,
+)
 
 log = logging.getLogger(__name__)
 
 MAX_FACT_LENGTH = 2000
+MAX_MESSAGE_LENGTH = 20000
 DEFAULT_MEMORY_LIMIT = 50
+DEFAULT_PURCHASE_LIMIT = 20
 
-
-async def _init_connection(conn: asyncpg.Connection) -> None:
-    # JSONB direkt als Python-Objekte statt als String
-    await conn.set_type_codec("jsonb", encoder=json.dumps, decoder=json.loads, schema="pg_catalog")
+_USER_COLS = "telegram_id, username, first_name, ai_enabled, credits, disclosed_at, created_at, last_active"
+_PRODUCT_COLS = "product_id, title, description, price_cents, currency, credits, is_active"
+_PAYMENT_COLS = (
+    "id, provider, provider_ref, user_id, product_id, amount_cents, currency, credits, "
+    "status::text AS status, created_at, paid_at"
+)
 
 
 def _fk_error(exc: asyncpg.ForeignKeyViolationError, user_id: int, product_id: str | None = None) -> Exception:
@@ -41,19 +63,20 @@ def _fk_error(exc: asyncpg.ForeignKeyViolationError, user_id: int, product_id: s
     return UserNotFound(user_id)
 
 
-def _entry(row: asyncpg.Record) -> PurchaseEntry:
-    return PurchaseEntry(
-        id=row["id"],
-        product_id=row["product_id"],
-        title=row["title"],
-        price_stars=row["price_stars"],
-        status=row["status"],
-        updated_at=row["updated_at"],
-    )
+def _user(row: asyncpg.Record) -> User:
+    return User(**dict(row))
 
 
 def _memory(row: asyncpg.Record) -> Memory:
     return Memory(id=row["id"], fact=row["fact"], category=row["category"], created_at=row["created_at"])
+
+
+def _product(row: asyncpg.Record) -> Product:
+    return Product(**{**dict(row), "currency": row["currency"].strip()})
+
+
+def _payment(row: asyncpg.Record) -> Payment:
+    return Payment(**{**dict(row), "currency": row["currency"].strip()})
 
 
 class BotRepository:
@@ -75,7 +98,7 @@ class BotRepository:
         max_size: int = 10,
         apply_schema: bool = True,
     ) -> "BotRepository":
-        pool = await asyncpg.create_pool(dsn, min_size=min_size, max_size=max_size, init=_init_connection)
+        pool = await asyncpg.create_pool(dsn, min_size=min_size, max_size=max_size)
         redis = Redis.from_url(redis_url, decode_responses=True) if redis_url else None
         repo = cls(pool, redis, cache_ttl)
         if apply_schema:
@@ -85,7 +108,7 @@ class BotRepository:
     async def init_schema(self) -> None:
         sql = files(__package__).joinpath("schema.sql").read_text(encoding="utf-8")
         async with self._pool.acquire() as conn:
-            # Advisory Lock, damit parallel startende Bot-Instanzen sich nicht stoeren
+            # Advisory Lock, damit parallel startende Instanzen sich nicht stoeren
             async with conn.transaction():
                 await conn.execute("SELECT pg_advisory_xact_lock(hashtext('botdb_schema'))")
                 await conn.execute(sql)
@@ -95,10 +118,53 @@ class BotRepository:
         if self._redis is not None:
             await self._redis.aclose()
 
-    # ------------------------------------------------------------------ Kern-API
+    # ------------------------------------------------------------------ User
+
+    async def upsert_user(
+        self,
+        telegram_id: int,
+        username: str | None,
+        first_name: str | None,
+        *,
+        initial_credits: int = 0,
+    ) -> tuple[User, bool]:
+        """Bei jeder eingehenden Nachricht aufrufen. Gibt (User, neu_angelegt) zurueck.
+
+        `initial_credits` wird nur beim Anlegen gutgeschrieben (Gratis-Kontingent).
+        Der Cache wird nur bei neuem User oder geaendertem Namen geleert, last_active
+        im gecachten Kontext darf also bis zur TTL alt sein.
+        """
+        if initial_credits < 0:
+            raise ValueError("initial_credits darf nicht negativ sein")
+        row = await self._pool.fetchrow(
+            "WITH old AS (SELECT username, first_name FROM users WHERE telegram_id = $1), "
+            "up AS ("
+            "  INSERT INTO users (telegram_id, username, first_name, credits) VALUES ($1, $2, $3, $4) "
+            "  ON CONFLICT (telegram_id) DO UPDATE "
+            "    SET username = EXCLUDED.username, first_name = EXCLUDED.first_name, last_active = now() "
+            f"  RETURNING {_USER_COLS}"
+            ") "
+            "SELECT up.*, NOT EXISTS (SELECT 1 FROM old) AS created, "
+            "  EXISTS (SELECT 1 FROM old WHERE old.username IS DISTINCT FROM up.username "
+            "          OR old.first_name IS DISTINCT FROM up.first_name) AS renamed "
+            "FROM up",
+            telegram_id,
+            username,
+            first_name,
+            initial_credits,
+        )
+        data: dict[str, Any] = dict(row)
+        created = data.pop("created")
+        if data.pop("renamed") or created:
+            await self._cache.invalidate(telegram_id)
+        return User(**data), created
+
+    async def get_user(self, user_id: int) -> User | None:
+        row = await self._pool.fetchrow(f"SELECT {_USER_COLS} FROM users WHERE telegram_id = $1", user_id)
+        return _user(row) if row else None
 
     async def get_user_context(self, user_id: int, memory_limit: int = DEFAULT_MEMORY_LIMIT) -> UserContext | None:
-        """Userprofil, die neuesten Memories und die Kaufhistorie. None, wenn der User unbekannt ist.
+        """Profil, neueste Memories, bezahlte Kaeufe, letztes Angebot. None bei unbekanntem User.
 
         Ergebnisse mit dem Standardlimit werden in Redis gecacht.
         """
@@ -109,13 +175,9 @@ class BotRepository:
                 return cached
 
         async with self._pool.acquire() as conn:
-            # Ein Snapshot fuer alle drei Abfragen, damit der Kontext in sich stimmig ist
+            # Ein Snapshot fuer alle Abfragen, damit der Kontext in sich stimmig ist
             async with conn.transaction(isolation="repeatable_read", readonly=True):
-                urow = await conn.fetchrow(
-                    "SELECT telegram_id, username, first_name, ai_enabled, last_active "
-                    "FROM users WHERE telegram_id = $1",
-                    user_id,
-                )
+                urow = await conn.fetchrow(f"SELECT {_USER_COLS} FROM users WHERE telegram_id = $1", user_id)
                 if urow is None:
                     return None
                 mrows = await conn.fetch(
@@ -125,56 +187,56 @@ class BotRepository:
                     memory_limit,
                 )
                 prows = await conn.fetch(
-                    "SELECT op.id, op.product_id, p.title, p.price_stars, op.status::text AS status, op.updated_at "
-                    "FROM offers_and_purchases op JOIN products p USING (product_id) "
-                    "WHERE op.user_id = $1 ORDER BY op.updated_at DESC",
+                    "SELECT pay.id AS payment_id, pay.product_id, p.title, pay.amount_cents, "
+                    "  pay.currency, pay.credits, pay.paid_at "
+                    "FROM payments pay JOIN products p USING (product_id) "
+                    "WHERE pay.user_id = $1 AND pay.status = 'paid' "
+                    "ORDER BY pay.paid_at DESC LIMIT $2",
                     user_id,
+                    DEFAULT_PURCHASE_LIMIT,
+                )
+                last_offer = await conn.fetchval(
+                    "SELECT max(offered_at) FROM offers WHERE user_id = $1", user_id
                 )
 
-        entries = [_entry(r) for r in prows]
         ctx = UserContext(
-            user=User(**dict(urow)),
+            user=_user(urow),
             memories=[_memory(r) for r in mrows],
-            purchases=[e for e in entries if e.status == "purchased"],
-            open_offers=[e for e in entries if e.status == "offered"],
+            purchases=[
+                PurchaseEntry(**{**dict(r), "currency": r["currency"].strip()}) for r in prows
+            ],
+            last_offer_at=last_offer,
         )
         if use_cache:
             await self._cache.set(ctx)
         return ctx
 
-    async def record_purchase(self, user_id: int, product_id: str) -> PurchaseResult:
-        """Setzt den Status auf 'purchased'. Gab es vorher kein Angebot, wird der Eintrag angelegt.
+    async def set_ai_enabled(self, user_id: int, enabled: bool) -> None:
+        result = await self._pool.execute(
+            "UPDATE users SET ai_enabled = $2 WHERE telegram_id = $1", user_id, enabled
+        )
+        if result.endswith(" 0"):
+            raise UserNotFound(user_id)
+        await self._cache.invalidate(user_id)
 
-        Idempotent: ein zweiter Aufruf (z. B. doppelt zugestelltes Telegram-Update)
-        aendert nichts und liefert newly_purchased=False.
-        """
-        async with self._pool.acquire() as conn:
-            async with conn.transaction():
-                try:
-                    changed = await conn.fetchval(
-                        "INSERT INTO offers_and_purchases (user_id, product_id, status) "
-                        "VALUES ($1, $2, 'purchased') "
-                        "ON CONFLICT (user_id, product_id) DO UPDATE "
-                        "  SET status = 'purchased', updated_at = now() "
-                        "  WHERE offers_and_purchases.status <> 'purchased' "
-                        "RETURNING id",
-                        user_id,
-                        product_id,
-                    )
-                except asyncpg.ForeignKeyViolationError as exc:
-                    raise _fk_error(exc, user_id, product_id) from exc
-
-                row = await conn.fetchrow(
-                    "SELECT op.id, op.product_id, p.title, p.price_stars, op.status::text AS status, op.updated_at "
-                    "FROM offers_and_purchases op JOIN products p USING (product_id) "
-                    "WHERE op.user_id = $1 AND op.product_id = $2",
-                    user_id,
-                    product_id,
-                )
-
-        if changed is not None:
+    async def mark_disclosed(self, user_id: int) -> bool:
+        """Vermerkt, dass der KI-Hinweis verschickt wurde. True beim ersten Mal."""
+        changed = await self._pool.fetchval(
+            "UPDATE users SET disclosed_at = now() "
+            "WHERE telegram_id = $1 AND disclosed_at IS NULL RETURNING true",
+            user_id,
+        )
+        if changed:
             await self._cache.invalidate(user_id)
-        return PurchaseResult(entry=_entry(row), newly_purchased=changed is not None)
+        return bool(changed)
+
+    async def delete_user(self, user_id: int) -> bool:
+        """Loescht User, Memories, Chatverlauf und Angebote. Zahlungen bleiben anonymisiert erhalten."""
+        result = await self._pool.execute("DELETE FROM users WHERE telegram_id = $1", user_id)
+        await self._cache.invalidate(user_id)
+        return not result.endswith(" 0")
+
+    # ------------------------------------------------------------------ Gedaechtnis
 
     async def record_memory(self, user_id: int, fact_text: str, category: str = "general") -> MemoryResult:
         """Speichert einen extrahierten Fakt. Exakte Duplikate werden nicht doppelt angelegt."""
@@ -210,96 +272,201 @@ class BotRepository:
         await self._cache.invalidate(user_id)
         return MemoryResult(memory=_memory(row), created=True)
 
-    # ------------------------------------------------------------------ Hilfsfunktionen
+    # ------------------------------------------------------------------ Chatverlauf
 
-    async def upsert_user(self, telegram_id: int, username: str | None, first_name: str | None) -> User:
-        """Bei jeder eingehenden Nachricht aufrufen: legt den User an oder aktualisiert Name und last_active.
-
-        Der Cache wird nur bei neuem User oder geaendertem Namen geleert, damit nicht
-        jede Nachricht den Cache wegwirft (last_active im Cache darf also bis zur TTL alt sein).
-        """
-        row = await self._pool.fetchrow(
-            "WITH old AS (SELECT username, first_name FROM users WHERE telegram_id = $1), "
-            "up AS ("
-            "  INSERT INTO users (telegram_id, username, first_name) VALUES ($1, $2, $3) "
-            "  ON CONFLICT (telegram_id) DO UPDATE "
-            "    SET username = EXCLUDED.username, first_name = EXCLUDED.first_name, last_active = now() "
-            "  RETURNING telegram_id, username, first_name, ai_enabled, last_active"
-            ") "
-            "SELECT up.*, "
-            "  NOT EXISTS (SELECT 1 FROM old) "
-            "  OR EXISTS (SELECT 1 FROM old WHERE old.username IS DISTINCT FROM up.username "
-            "             OR old.first_name IS DISTINCT FROM up.first_name) AS profile_changed "
-            "FROM up",
-            telegram_id,
-            username,
-            first_name,
-        )
-        data: dict[str, Any] = dict(row)
-        if data.pop("profile_changed"):
-            await self._cache.invalidate(telegram_id)
-        return User(**data)
-
-    async def set_ai_enabled(self, user_id: int, enabled: bool) -> None:
-        result = await self._pool.execute(
-            "UPDATE users SET ai_enabled = $2 WHERE telegram_id = $1", user_id, enabled
-        )
-        if result.endswith(" 0"):
-            raise UserNotFound(user_id)
-        await self._cache.invalidate(user_id)
-
-    async def record_offer(self, user_id: int, product_id: str) -> bool:
-        """Vermerkt, dass dem User ein Produkt angeboten wurde.
-
-        Ein bereits gekauftes Produkt bleibt 'purchased'. Rueckgabe: True, wenn neu angeboten.
-        """
+    async def add_message(self, user_id: int, role: str, content: str) -> ChatMessage:
+        if role not in ("user", "assistant"):
+            raise InvalidMessage(f"Unbekannte Rolle {role!r}")
+        if not content or not content.strip():
+            raise InvalidMessage("Nachricht ist leer")
+        if len(content) > MAX_MESSAGE_LENGTH:
+            content = content[:MAX_MESSAGE_LENGTH]
         try:
-            created = await self._pool.fetchval(
-                "INSERT INTO offers_and_purchases (user_id, product_id, status) VALUES ($1, $2, 'offered') "
-                "ON CONFLICT (user_id, product_id) DO NOTHING RETURNING true",
+            row = await self._pool.fetchrow(
+                "INSERT INTO messages (user_id, role, content) VALUES ($1, $2, $3) "
+                "RETURNING id, role, content, created_at",
                 user_id,
-                product_id,
+                role,
+                content,
             )
         except asyncpg.ForeignKeyViolationError as exc:
-            raise _fk_error(exc, user_id, product_id) from exc
-        if created:
+            raise UserNotFound(user_id) from exc
+        return ChatMessage(**dict(row))
+
+    async def get_recent_messages(self, user_id: int, limit: int = 30) -> list[ChatMessage]:
+        """Die letzten `limit` Nachrichten, aelteste zuerst."""
+        rows = await self._pool.fetch(
+            "SELECT id, role, content, created_at FROM ("
+            "  SELECT id, role, content, created_at FROM messages "
+            "  WHERE user_id = $1 ORDER BY id DESC LIMIT $2"
+            ") recent ORDER BY id",
+            user_id,
+            limit,
+        )
+        return [ChatMessage(**dict(r)) for r in rows]
+
+    async def count_replies_since(self, user_id: int, since: datetime) -> int:
+        """Anzahl der KI-Antworten an diesen User seit `since` (für Tageslimits)."""
+        return await self._pool.fetchval(
+            "SELECT count(*) FROM messages WHERE user_id = $1 AND role = 'assistant' AND created_at >= $2",
+            user_id,
+            since,
+        )
+
+    # ------------------------------------------------------------------ Guthaben
+
+    async def consume_credit(self, user_id: int) -> int | None:
+        """Zieht atomar 1 Guthaben ab. Gibt den neuen Stand zurueck oder None, wenn nichts mehr da war."""
+        balance = await self._pool.fetchval(
+            "UPDATE users SET credits = credits - 1 "
+            "WHERE telegram_id = $1 AND credits > 0 RETURNING credits",
+            user_id,
+        )
+        if balance is not None:
             await self._cache.invalidate(user_id)
-        return bool(created)
+        return balance
+
+    async def add_credits(self, user_id: int, amount: int) -> int:
+        if amount <= 0:
+            raise ValueError("amount muss positiv sein")
+        balance = await self._pool.fetchval(
+            "UPDATE users SET credits = credits + $2 WHERE telegram_id = $1 RETURNING credits",
+            user_id,
+            amount,
+        )
+        if balance is None:
+            raise UserNotFound(user_id)
+        await self._cache.invalidate(user_id)
+        return balance
+
+    # ------------------------------------------------------------------ Katalog
 
     async def upsert_product(
         self,
         product_id: str,
         title: str,
-        price_stars: int,
+        price_cents: int,
+        credits: int,
+        *,
+        currency: str = "EUR",
         description: str = "",
-        file_ids: list[str] | None = None,
         is_active: bool = True,
-    ) -> None:
-        await self._pool.execute(
-            "INSERT INTO products (product_id, title, description, price_stars, file_ids, is_active) "
-            "VALUES ($1, $2, $3, $4, $5, $6) "
-            "ON CONFLICT (product_id) DO UPDATE SET title = EXCLUDED.title, description = EXCLUDED.description, "
-            "  price_stars = EXCLUDED.price_stars, file_ids = EXCLUDED.file_ids, is_active = EXCLUDED.is_active",
+    ) -> Product:
+        row = await self._pool.fetchrow(
+            "INSERT INTO products (product_id, title, description, price_cents, currency, credits, is_active) "
+            "VALUES ($1, $2, $3, $4, $5, $6, $7) "
+            "ON CONFLICT (product_id) DO UPDATE SET title = EXCLUDED.title, "
+            "  description = EXCLUDED.description, price_cents = EXCLUDED.price_cents, "
+            "  currency = EXCLUDED.currency, credits = EXCLUDED.credits, is_active = EXCLUDED.is_active "
+            f"RETURNING {_PRODUCT_COLS}",
             product_id,
             title,
             description,
-            price_stars,
-            file_ids or [],
+            price_cents,
+            currency.upper(),
+            credits,
             is_active,
         )
-        # Titel/Preis stehen in gecachten Kontexten; die kurze TTL reicht hier als Aktualisierung.
+        return _product(row)
 
-    async def get_product(self, product_id: str) -> dict[str, Any] | None:
-        row = await self._pool.fetchrow(
-            "SELECT product_id, title, description, price_stars, file_ids, is_active "
-            "FROM products WHERE product_id = $1",
-            product_id,
-        )
-        return dict(row) if row else None
+    async def get_product(self, product_id: str) -> Product | None:
+        row = await self._pool.fetchrow(f"SELECT {_PRODUCT_COLS} FROM products WHERE product_id = $1", product_id)
+        return _product(row) if row else None
 
-    async def list_active_products(self) -> list[dict[str, Any]]:
+    async def list_active_products(self) -> list[Product]:
         rows = await self._pool.fetch(
-            "SELECT product_id, title, description, price_stars, file_ids, is_active "
-            "FROM products WHERE is_active ORDER BY title"
+            f"SELECT {_PRODUCT_COLS} FROM products WHERE is_active ORDER BY price_cents, product_id"
         )
-        return [dict(r) for r in rows]
+        return [_product(r) for r in rows]
+
+    # ------------------------------------------------------------------ Angebote
+
+    async def record_offer(self, user_id: int, product_id: str) -> None:
+        try:
+            await self._pool.execute(
+                "INSERT INTO offers (user_id, product_id) VALUES ($1, $2)", user_id, product_id
+            )
+        except asyncpg.ForeignKeyViolationError as exc:
+            raise _fk_error(exc, user_id, product_id) from exc
+        await self._cache.invalidate(user_id)
+
+    async def last_offer_at(self, user_id: int) -> datetime | None:
+        return await self._pool.fetchval("SELECT max(offered_at) FROM offers WHERE user_id = $1", user_id)
+
+    # ------------------------------------------------------------------ Zahlungen
+
+    async def create_payment(self, provider: str, provider_ref: str, user_id: int, product: Product) -> Payment:
+        """Legt einen offenen Zahlungsauftrag an, sobald ein Zahlungslink erzeugt wurde."""
+        try:
+            row = await self._pool.fetchrow(
+                "INSERT INTO payments (provider, provider_ref, user_id, product_id, amount_cents, currency, credits) "
+                f"VALUES ($1, $2, $3, $4, $5, $6, $7) RETURNING {_PAYMENT_COLS}",
+                provider,
+                provider_ref,
+                user_id,
+                product.product_id,
+                product.price_cents,
+                product.currency,
+                product.credits,
+            )
+        except asyncpg.ForeignKeyViolationError as exc:
+            raise _fk_error(exc, user_id, product.product_id) from exc
+        return _payment(row)
+
+    async def get_payment(self, provider: str, provider_ref: str) -> Payment | None:
+        row = await self._pool.fetchrow(
+            f"SELECT {_PAYMENT_COLS} FROM payments WHERE provider = $1 AND provider_ref = $2",
+            provider,
+            provider_ref,
+        )
+        return _payment(row) if row else None
+
+    async def complete_payment(
+        self, provider: str, provider_ref: str, amount_cents: int, currency: str
+    ) -> PaymentResult:
+        """Verbucht eine bestaetigte Zahlung und schreibt das Guthaben gut.
+
+        Idempotent: doppelt zugestellte Webhooks verbuchen nur einmal (newly_paid=False).
+        Wirft PaymentNotFound oder PaymentMismatch (Betrag/Waehrung weichen ab).
+        """
+        async with self._pool.acquire() as conn:
+            async with conn.transaction():
+                row = await conn.fetchrow(
+                    f"SELECT {_PAYMENT_COLS} FROM payments "
+                    "WHERE provider = $1 AND provider_ref = $2 FOR UPDATE",
+                    provider,
+                    provider_ref,
+                )
+                if row is None:
+                    raise PaymentNotFound(provider, provider_ref)
+                payment = _payment(row)
+                if amount_cents != payment.amount_cents or currency.upper() != payment.currency:
+                    raise PaymentMismatch(
+                        f"erwartet {payment.amount_cents} {payment.currency}, "
+                        f"erhalten {amount_cents} {currency.upper()}"
+                    )
+                if payment.status == "paid":
+                    balance = None
+                    if payment.user_id is not None:
+                        balance = await conn.fetchval(
+                            "SELECT credits FROM users WHERE telegram_id = $1", payment.user_id
+                        )
+                    return PaymentResult(payment=payment, newly_paid=False, new_balance=balance)
+
+                row = await conn.fetchrow(
+                    "UPDATE payments SET status = 'paid', paid_at = now() WHERE id = $1 "
+                    f"RETURNING {_PAYMENT_COLS}",
+                    payment.id,
+                )
+                payment = _payment(row)
+                balance = None
+                if payment.user_id is not None:
+                    balance = await conn.fetchval(
+                        "UPDATE users SET credits = credits + $2 WHERE telegram_id = $1 RETURNING credits",
+                        payment.user_id,
+                        payment.credits,
+                    )
+
+        if payment.user_id is not None:
+            await self._cache.invalidate(payment.user_id)
+        return PaymentResult(payment=payment, newly_paid=True, new_balance=balance)

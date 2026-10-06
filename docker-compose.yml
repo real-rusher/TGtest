@@ -1,0 +1,64 @@
+# Gesamtsystem: Telegram-Gateway, Orchestrator, PostgreSQL, Redis.
+# Modus (chat oder shop) und alles Weitere steht in der .env. Einrichtung siehe README.md.
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: bot
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?POSTGRES_PASSWORD in .env setzen}
+      POSTGRES_DB: bot
+    volumes:
+      - pg_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U bot -d bot"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+    restart: unless-stopped
+
+  redis:
+    image: redis:7-alpine
+    command: ["redis-server", "--save", "", "--appendonly", "no"]
+    restart: unless-stopped
+
+  orchestrator:
+    build:
+      context: .
+      dockerfile: orchestrator/Dockerfile
+    env_file: .env
+    environment:
+      DATABASE_URL: postgresql://bot:${POSTGRES_PASSWORD}@postgres:5432/bot
+      REDIS_URL: redis://redis:6379/0
+      GATEWAY_URL: http://gateway:8080
+      HTTP_HOST: 0.0.0.0
+      HTTP_PORT: "8090"
+    volumes:
+      - ./config:/config:ro
+    ports:
+      # Reverse Proxy davor setzen, nur /payments/ öffentlich machen.
+      # Mehrere Klienten auf einem Server: unterschiedliche ORCHESTRATOR_PORT in der .env
+      - "127.0.0.1:${ORCHESTRATOR_PORT:-8090}:8090"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_started
+    restart: unless-stopped
+
+  gateway:
+    build: ./telegram-gateway
+    env_file: .env
+    environment:
+      API_TOKEN: ${GATEWAY_TOKEN:?GATEWAY_TOKEN in .env setzen}
+      INBOUND_WEBHOOK_URL: http://orchestrator:8090/inbound
+      INBOUND_WEBHOOK_TOKEN: ${INBOUND_TOKEN:?INBOUND_TOKEN in .env setzen}
+      HTTP_HOST: 0.0.0.0
+      HTTP_PORT: "8080"
+    volumes:
+      - gateway_data:/app/data   # Telegram-Session und Sperrliste
+    restart: unless-stopped
+
+volumes:
+  pg_data:
+  gateway_data:
