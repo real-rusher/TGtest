@@ -19,13 +19,10 @@ class ConfigError(RuntimeError):
 
 
 DEFAULT_DISCLOSURE = (
-    "Kurzer Hinweis vorab: Hier antwortet eine KI. Damit sie sich an dich erinnert, "
-    "werden deine Nachrichten und Infos, die du über dich erzählst, gespeichert. "
-    "Mit /stop beendest du die KI-Antworten, mit /delete löschst du alle deine Daten."
+   
 )
 DEFAULT_PAYWALL = (
-    "Dein Guthaben ist aufgebraucht. Mit dem Paket \"{title}\" ({credits} Antworten für {price}) "
-    "geht es weiter: {link}"
+
 )
 DEFAULT_PAYMENT_CONFIRM = "Danke, die Zahlung ist angekommen! Dein Guthaben: {balance} Antworten."
 DEFAULT_STOP = "Okay, ab jetzt antwortet hier keine KI mehr. Mit /start geht es wieder weiter."
