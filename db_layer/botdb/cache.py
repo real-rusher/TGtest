@@ -18,7 +18,7 @@ log = logging.getLogger(__name__)
 
 # Bei Aenderungen am Format von UserContext die Version erhoehen,
 # dann werden alte Cache-Eintraege automatisch ignoriert.
-_KEY_VERSION = "v1"
+_KEY_VERSION = "v2"
 
 
 class ContextCache:

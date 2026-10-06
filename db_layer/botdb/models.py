@@ -1,7 +1,7 @@
 """Datenobjekte, die das Repository zurueckgibt.
 
-Alle Objekte lassen sich ueber to_dict()/from_dict() verlustfrei als JSON
-serialisieren, damit der Redis-Cache sie speichern kann.
+UserContext laesst sich ueber to_dict()/from_dict() verlustfrei als JSON
+serialisieren, damit der Redis-Cache ihn speichern kann.
 """
 
 from __future__ import annotations
@@ -12,8 +12,10 @@ from typing import Any
 from uuid import UUID
 
 
-def _dt(value: str | datetime) -> datetime:
-    return value if isinstance(value, datetime) else datetime.fromisoformat(value)
+def _dt(value: str | datetime | None) -> datetime | None:
+    if value is None or isinstance(value, datetime):
+        return value
+    return datetime.fromisoformat(value)
 
 
 def _jsonable(obj: Any) -> Any:
@@ -34,6 +36,9 @@ class User:
     username: str | None
     first_name: str | None
     ai_enabled: bool
+    credits: int
+    disclosed_at: datetime | None
+    created_at: datetime
     last_active: datetime
 
     @classmethod
@@ -43,6 +48,9 @@ class User:
             username=d["username"],
             first_name=d["first_name"],
             ai_enabled=bool(d["ai_enabled"]),
+            credits=int(d["credits"]),
+            disclosed_at=_dt(d["disclosed_at"]),
+            created_at=_dt(d["created_at"]),
             last_active=_dt(d["last_active"]),
         )
 
@@ -66,24 +74,26 @@ class Memory:
 
 @dataclass(frozen=True, slots=True)
 class PurchaseEntry:
-    """Ein Eintrag aus offers_and_purchases, angereichert mit Produktdaten."""
+    """Eine bezahlte Zahlung, angereichert mit dem Produkttitel."""
 
-    id: UUID
+    payment_id: UUID
     product_id: str
     title: str
-    price_stars: int
-    status: str  # 'offered' | 'purchased'
-    updated_at: datetime
+    amount_cents: int
+    currency: str
+    credits: int
+    paid_at: datetime
 
     @classmethod
     def from_dict(cls, d: dict[str, Any]) -> "PurchaseEntry":
         return cls(
-            id=UUID(str(d["id"])),
+            payment_id=UUID(str(d["payment_id"])),
             product_id=d["product_id"],
             title=d["title"],
-            price_stars=int(d["price_stars"]),
-            status=d["status"],
-            updated_at=_dt(d["updated_at"]),
+            amount_cents=int(d["amount_cents"]),
+            currency=d["currency"],
+            credits=int(d["credits"]),
+            paid_at=_dt(d["paid_at"]),
         )
 
 
@@ -93,12 +103,8 @@ class UserContext:
 
     user: User
     memories: list[Memory] = field(default_factory=list)
-    purchases: list[PurchaseEntry] = field(default_factory=list)  # status = purchased
-    open_offers: list[PurchaseEntry] = field(default_factory=list)  # status = offered
-
-    @property
-    def purchased_product_ids(self) -> set[str]:
-        return {p.product_id for p in self.purchases}
+    purchases: list[PurchaseEntry] = field(default_factory=list)
+    last_offer_at: datetime | None = None
 
     def to_dict(self) -> dict[str, Any]:
         return _jsonable(asdict(self))
@@ -109,14 +115,49 @@ class UserContext:
             user=User.from_dict(d["user"]),
             memories=[Memory.from_dict(m) for m in d["memories"]],
             purchases=[PurchaseEntry.from_dict(p) for p in d["purchases"]],
-            open_offers=[PurchaseEntry.from_dict(p) for p in d["open_offers"]],
+            last_offer_at=_dt(d.get("last_offer_at")),
         )
 
 
 @dataclass(frozen=True, slots=True)
-class PurchaseResult:
-    entry: PurchaseEntry
-    newly_purchased: bool  # False, wenn das Produkt schon vorher gekauft war
+class ChatMessage:
+    id: int
+    role: str  # 'user' | 'assistant'
+    content: str
+    created_at: datetime
+
+
+@dataclass(frozen=True, slots=True)
+class Product:
+    product_id: str
+    title: str
+    description: str
+    price_cents: int
+    currency: str
+    credits: int
+    is_active: bool
+
+
+@dataclass(frozen=True, slots=True)
+class Payment:
+    id: UUID
+    provider: str
+    provider_ref: str
+    user_id: int | None
+    product_id: str
+    amount_cents: int
+    currency: str
+    credits: int
+    status: str  # 'pending' | 'paid'
+    created_at: datetime
+    paid_at: datetime | None
+
+
+@dataclass(frozen=True, slots=True)
+class PaymentResult:
+    payment: Payment
+    newly_paid: bool  # False, wenn die Zahlung schon vorher verbucht war
+    new_balance: int | None  # Guthaben danach, None wenn der User inzwischen geloescht ist
 
 
 @dataclass(frozen=True, slots=True)

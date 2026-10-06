@@ -1,0 +1,18 @@
+[
+  {
+    "product_id": "small",
+    "title": "Kleines Paket",
+    "description": "50 Antworten",
+    "price_cents": 299,
+    "currency": "EUR",
+    "credits": 50
+  },
+  {
+    "product_id": "big",
+    "title": "Großes Paket",
+    "description": "250 Antworten",
+    "price_cents": 999,
+    "currency": "EUR",
+    "credits": 250
+  }
+]
