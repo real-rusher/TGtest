@@ -88,6 +88,10 @@ class FakeGenerator:
         return reply
 
 
+TEST_DISCLOSURE = "Hinweis: Hier antwortet eine KI."
+TEST_PAYWALL = "Guthaben leer. {title} mit {credits} Antworten für {price}: {link}"
+
+
 def make_config(**overrides) -> Config:
     base = Config(
         database_url=DSN or "postgresql://unused",
@@ -104,7 +108,9 @@ def make_config(**overrides) -> Config:
         offer_cooldown_hours=12,
     )
     if "texts" not in overrides:
-        overrides["texts"] = Texts.for_mode(overrides.get("mode", "chat"))
+        overrides["texts"] = replace(
+            Texts.for_mode(overrides.get("mode", "chat")), disclosure=TEST_DISCLOSURE, paywall=TEST_PAYWALL
+        )
     return replace(base, **overrides)
 
 

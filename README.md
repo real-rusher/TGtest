@@ -28,7 +28,7 @@ In beiden Modi merkt sich die KI, was Nutzer über sich erzählen, und schreibt 
 
 1. Das Gateway leitet die private Nachricht an `POST /inbound` weiter.
 2. Der Orchestrator sammelt kurz hintereinander geschickte Nachrichten (`DEBOUNCE_SECONDS`) und beantwortet sie gemeinsam.
-3. Beim ersten Kontakt geht zuerst der **KI-Hinweis** raus. Er lässt sich umformulieren, aber nicht abschalten.
+3. Beim ersten Kontakt geht zuerst der **KI-Hinweis** (`TEXT_DISCLOSURE`) raus. Er ist Pflicht, ohne ihn startet der Orchestrator nicht.
 4. Ist das Tageslimit (`DAILY_REPLY_LIMIT`) erreicht, bleibt die KI still.
 5. **Nur chat:** Pro Antwort wird 1 Guthaben abgezogen. Ist keins mehr da, kommt ein Zahlungslink, höchstens alle `OFFER_COOLDOWN_HOURS` Stunden.
 6. Die Antwort wird aus Persona, gespeicherten Fakten und Verlauf erzeugt. Links, die das Modell selbst schreibt, werden immer entfernt.
@@ -117,8 +117,9 @@ Structured Outputs (`json_schema`), dafür kann mit `FACT_MODEL` ein anderes Mod
 
 ### Texte
 
-Alle Systemtexte stehen als `TEXT_...` in der `.env`. Leer heißt: Standardtext des Modus. Die Standardtexte selbst
-stehen in `orchestrator/orchestrator/config.py`. Feste Regeln für jede Antwort (kurz schreiben, kein Markdown,
+Alle Systemtexte stehen als `TEXT_...` in der `.env`. **Pflicht** sind `TEXT_DISCLOSURE` (KI-Hinweis, beide Modi)
+und `TEXT_PAYWALL` (Zahlungslink, nur chat). Fehlen sie, startet der Orchestrator nicht. Die Vorlagen enthalten Beispieltexte.
+Alle anderen Texte sind optional, leer heißt: Standardtext des Modus aus `orchestrator/orchestrator/config.py`. Feste Regeln für jede Antwort (kurz schreiben, kein Markdown,
 ehrlich sagen, dass hier eine KI schreibt) stehen in `orchestrator/orchestrator/llm.py`.
 
 ## Tests
@@ -139,7 +140,7 @@ GitHub Actions führt alles bei jedem Push aus (`.github/workflows/tests.yml`).
 - **Altersprüfung**: noch nicht umgesetzt.
 - **Auslieferung digitaler Inhalte**: noch nicht umgesetzt, Pakete schreiben bisher nur Guthaben gut.
 - **Rechtliches**: Datenschutzerklärung (Verlauf und Fakten werden gespeichert), Impressum, AGB, Widerrufsbelehrung.
-  Im Shop-Modus muss erkennbar sein, dass ein Assistent des Shops schreibt (der Standard-Hinweis nennt `SHOP_NAME`).
+  Im Shop-Modus muss erkennbar sein, dass ein Assistent des Shops schreibt (die Vorlage für `TEXT_DISCLOSURE` nennt `{shop_name}`).
   Der Zahlungsanbieter verlangt einen verifizierten Kontoinhaber.
 
 ## Bekannte Grenzen

@@ -2,12 +2,11 @@
 
 import asyncio
 
-from orchestrator.config import DEFAULT_DISCLOSURE
 from orchestrator.conversation import ConversationManager, Inbound, parse_command
 from orchestrator.llm import GenerationError
 from orchestrator.payments import PaymentEvent
 
-from conftest import event, make_config, needs_db
+from conftest import TEST_DISCLOSURE, event, make_config, needs_db
 
 pytestmark = needs_db
 
@@ -30,7 +29,7 @@ async def test_erster_kontakt_hinweis_dann_antwort(manager, parts, repo):
     parts.generator.replies = ["Hey Max! Wie geht's dir?"]
     await say(manager, "hallo")
 
-    assert parts.gateway.texts() == [DEFAULT_DISCLOSURE, "Hey Max! | Wie geht's dir?"]
+    assert parts.gateway.texts() == [TEST_DISCLOSURE, "Hey Max! | Wie geht's dir?"]
     user = await repo.get_user(42)
     assert user.credits == 1 and user.disclosed_at is not None
     history = await repo.get_recent_messages(42)
@@ -101,7 +100,7 @@ async def test_ohne_pakete_kein_link(repo, parts):
     await repo.upsert_product("big", "Großes Paket", 999, 250, is_active=False)
     m = ConversationManager(repo, parts.gateway, parts.generator, parts.facts, parts.payments, make_config(free_credits=0))
     await say(m, "hi")
-    assert parts.gateway.texts() == [DEFAULT_DISCLOSURE]
+    assert parts.gateway.texts() == [TEST_DISCLOSURE]
     await m.shutdown()
 
 
@@ -137,7 +136,7 @@ async def test_befehl_mitten_im_stapel_haelt_reihenfolge(manager, parts, repo):
     await say(manager, "zweite", drain=False)
     await manager.drain()
     texts = parts.gateway.texts()
-    assert texts[0] == DEFAULT_DISCLOSURE
+    assert texts[0] == TEST_DISCLOSURE
     assert texts[1:] == ["alles klar", "Dein Guthaben: 1 Antworten.", "alles klar"]
 
 
@@ -167,7 +166,7 @@ async def test_hinweis_scheitert_kein_verbrauch(manager, parts, repo):
     assert user.disclosed_at is None and user.credits == 2
     parts.gateway.paused.clear()
     await say(manager, "hallo?")
-    assert parts.gateway.texts()[0] == DEFAULT_DISCLOSURE
+    assert parts.gateway.texts()[0] == TEST_DISCLOSURE
 
 
 async def test_fakten_alle_n_nachrichten(repo, parts):

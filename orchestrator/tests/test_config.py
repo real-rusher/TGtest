@@ -2,12 +2,7 @@ import json
 
 import pytest
 
-from orchestrator.config import (
-    DEFAULT_DISCLOSURE,
-    DEFAULT_SHOP_DELETE_WARN,
-    Config,
-    ConfigError,
-)
+from orchestrator.config import DEFAULT_SHOP_DELETE_WARN, DEFAULT_STOP, Config, ConfigError
 
 BASE = {
     "DATABASE_URL": "postgresql://x",
@@ -15,6 +10,8 @@ BASE = {
     "GATEWAY_URL": "http://gw/",
     "GATEWAY_TOKEN": "b",
     "LLM_API_KEY": "k",
+    "TEXT_DISCLOSURE": "Hier schreibt eine KI.",
+    "TEXT_PAYWALL": "Weiter geht's hier: {link}",
 }
 
 
@@ -41,13 +38,29 @@ def env(monkeypatch, tmp_path):
 def test_chat_modus_standard(env):
     cfg = env(PAYMENT_PROVIDER="dummy", PUBLIC_BASE_URL="https://pub.test/")
     assert cfg.mode == "chat" and cfg.gateway_url == "http://gw"
-    assert cfg.texts.disclosure == DEFAULT_DISCLOSURE  # leerer TEXT_DISCLOSURE = Standardtext
+    assert cfg.texts.disclosure == "Hier schreibt eine KI."
+    assert cfg.texts.stop == DEFAULT_STOP  # leerer Text = Standard
     assert cfg.public_base_url == "https://pub.test"
 
 
-def test_leere_texte_nutzen_standard(env):
-    cfg = env(PAYMENT_PROVIDER="dummy", PUBLIC_BASE_URL="https://p", TEXT_DISCLOSURE="  ", TEXT_PAYWALL="")
-    assert cfg.texts.disclosure == DEFAULT_DISCLOSURE and "{link}" in cfg.texts.paywall
+def test_ki_hinweis_ist_pflicht(env):
+    for value in ("", "   "):
+        with pytest.raises(ConfigError, match="TEXT_DISCLOSURE"):
+            env(PAYMENT_PROVIDER="dummy", PUBLIC_BASE_URL="https://p", TEXT_DISCLOSURE=value)
+    with pytest.raises(ConfigError, match="TEXT_DISCLOSURE"):
+        env(BOT_MODE="shop", SHOP_NAME="X", CATALOG_FILE=env.catalog, TEXT_DISCLOSURE="")
+
+
+def test_shop_name_platzhalter_ohne_shop_name(env):
+    with pytest.raises(ConfigError, match="SHOP_NAME"):
+        env(PAYMENT_PROVIDER="dummy", PUBLIC_BASE_URL="https://p", TEXT_DISCLOSURE="KI von {shop_name}")
+    cfg = env(PAYMENT_PROVIDER="dummy", PUBLIC_BASE_URL="https://p", TEXT_DISCLOSURE="KI von {shop_name}", SHOP_NAME="Lena")
+    assert cfg.texts.disclosure == "KI von Lena"
+
+
+def test_bezahlschranke_ist_pflicht_im_chat(env):
+    with pytest.raises(ConfigError, match="TEXT_PAYWALL"):
+        env(PAYMENT_PROVIDER="dummy", PUBLIC_BASE_URL="https://p", TEXT_PAYWALL="")
 
 
 def test_eigene_texte_mit_zeilenumbruch(env):
@@ -68,9 +81,9 @@ def test_chat_modus_pruefungen(env):
 
 def test_shop_modus(env):
     cfg = env(BOT_MODE="SHOP", SHOP_NAME="Nordwind", CATALOG_FILE=env.catalog, LINK_QUERY="ref=tg",
-              DAILY_REPLY_LIMIT="150")
+              DAILY_REPLY_LIMIT="150", TEXT_DISCLOSURE="Hier schreibt der KI-Assistent von {shop_name}.")
     assert cfg.mode == "shop" and cfg.shop_name == "Nordwind"
-    assert "KI-Assistent von Nordwind" in cfg.texts.disclosure
+    assert cfg.texts.disclosure == "Hier schreibt der KI-Assistent von Nordwind."
     assert cfg.texts.delete_warn == DEFAULT_SHOP_DELETE_WARN
     assert cfg.daily_reply_limit == 150 and cfg.link_query == "ref=tg"
 

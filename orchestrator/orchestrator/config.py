@@ -18,12 +18,9 @@ class ConfigError(RuntimeError):
     """Fehlende oder ungültige Konfiguration."""
 
 
-DEFAULT_DISCLOSURE = (
-   
-)
-DEFAULT_PAYWALL = (
-
-)
+# KI-Hinweis (TEXT_DISCLOSURE) und Bezahlschranke (TEXT_PAYWALL) haben bewusst keinen
+# Standardtext: Sie werden pro Installation in der .env gesetzt. Der KI-Hinweis ist Pflicht,
+# ohne ihn startet der Orchestrator nicht. Vorlagen stehen in .env.chat.example / .env.shop.example.
 DEFAULT_PAYMENT_CONFIRM = "Danke, die Zahlung ist angekommen! Dein Guthaben: {balance} Antworten."
 DEFAULT_STOP = "Okay, ab jetzt antwortet hier keine KI mehr. Mit /start geht es wieder weiter."
 DEFAULT_START = "Die KI-Antworten sind wieder an."
@@ -34,12 +31,6 @@ DEFAULT_DELETE_WARN = (
 )
 DEFAULT_DELETE_DONE = "Erledigt, alle deine Daten sind gelöscht."
 
-# Shop-Modus: Werbung muss als solche erkennbar sein, daher nennt der Hinweis den Shop.
-DEFAULT_SHOP_DISCLOSURE = (
-    "Hallo! Hier antwortet der KI-Assistent von {shop_name} und hilft dir, das passende "
-    "Produkt zu finden. Damit ich mich an dich erinnere, werden deine Nachrichten gespeichert. "
-    "Mit /stop beendest du die Antworten, mit /delete löschst du alle deine Daten."
-)
 DEFAULT_SHOP_DELETE_WARN = (
     "Das löscht deinen Chatverlauf und alles, was über dich gespeichert ist. "
     "Zum Bestätigen schick: /delete confirm"
@@ -71,14 +62,14 @@ def _number(name: str, default: str, cast):
 
 
 def _text(name: str, default: str) -> str:
-    # Erlaubt \n in .env-Werten für mehrzeilige Texte
-    return (_get(name, default) or default).replace("\\n", "\n")
+    # Leer = Standardtext. Erlaubt \n in .env-Werten für mehrzeilige Texte.
+    return (_get(name) or default).replace("\\n", "\n")
 
 
 @dataclass(frozen=True)
 class Texts:
-    disclosure: str = DEFAULT_DISCLOSURE
-    paywall: str = DEFAULT_PAYWALL
+    disclosure: str = ""
+    paywall: str = ""
     payment_confirm: str = DEFAULT_PAYMENT_CONFIRM
     stop: str = DEFAULT_STOP
     start: str = DEFAULT_START
@@ -90,7 +81,7 @@ class Texts:
     def for_mode(cls, mode: str) -> "Texts":
         """Standardtexte passend zum Modus."""
         if mode == "shop":
-            return cls(disclosure=DEFAULT_SHOP_DISCLOSURE, delete_warn=DEFAULT_SHOP_DELETE_WARN)
+            return cls(delete_warn=DEFAULT_SHOP_DELETE_WARN)
         return cls()
 
 
@@ -169,8 +160,12 @@ class Config:
         )
         if shop_name:
             texts = replace(texts, disclosure=texts.disclosure.replace("{shop_name}", shop_name))
+        if not texts.disclosure.strip():
+            raise ConfigError(
+                "TEXT_DISCLOSURE (KI-Hinweis beim ersten Kontakt) muss in der .env gesetzt sein."
+            )
         if mode == "chat" and "{link}" not in texts.paywall:
-            raise ConfigError("TEXT_PAYWALL muss den Platzhalter {link} enthalten.")
+            raise ConfigError("TEXT_PAYWALL muss gesetzt sein und den Platzhalter {link} enthalten.")
 
         llm_model = _get("LLM_MODEL", "gpt-4o-mini")
         cfg = cls(
@@ -226,12 +221,12 @@ class Config:
             raise ConfigError("DAILY_REPLY_LIMIT darf nicht negativ sein (0 = kein Limit).")
         if not self.texts.disclosure.strip():
             raise ConfigError("Der KI-Hinweis darf nicht leer sein.")
+        if "{shop_name}" in self.texts.disclosure:
+            raise ConfigError("TEXT_DISCLOSURE enthält {shop_name}, aber SHOP_NAME ist nicht gesetzt.")
         if self.mode == "shop":
             missing = [n for n, v in (("SHOP_NAME", self.shop_name), ("CATALOG_FILE", self.catalog_file)) if not v]
             if missing:
                 raise ConfigError(f"Für BOT_MODE=shop fehlen: {', '.join(missing)}")
-            if "{shop_name}" in self.texts.disclosure:
-                raise ConfigError("TEXT_DISCLOSURE enthält {shop_name}, aber SHOP_NAME ist nicht gesetzt.")
             if self.catalog_prompt_limit < 1 or self.max_links < 1:
                 raise ConfigError("CATALOG_PROMPT_LIMIT und MAX_LINKS müssen mindestens 1 sein.")
             return  # Zahlungsanbieter wird im Shop-Modus nicht gebraucht
