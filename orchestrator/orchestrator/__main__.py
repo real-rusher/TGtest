@@ -15,6 +15,7 @@ from openai import AsyncOpenAI
 from botdb import BotRepository
 
 from .app import build_app
+from .catalog import Catalog, CatalogError
 from .config import Config, ConfigError
 from .conversation import ConversationManager
 from .facts import FactExtractor
@@ -59,17 +60,31 @@ async def seed_products(repo: BotRepository, path: str) -> None:
     log.info("%d Pakete aus %s übernommen", len(items), path)
 
 
+def load_catalog(cfg: Config) -> Catalog:
+    try:
+        catalog = Catalog.from_file(cfg.catalog_file, link_query=cfg.link_query)
+    except CatalogError as exc:
+        raise ConfigError(str(exc)) from None
+    log.info("Katalog mit %d Produkten geladen", len(catalog))
+    return catalog
+
+
 async def run(cfg: Config) -> int:
+    log.info("Modus: %s", cfg.mode)
+    catalog = load_catalog(cfg) if cfg.mode == "shop" else None
     repo = await BotRepository.connect(cfg.database_url, cfg.redis_url)
-    if cfg.products_file:
-        await seed_products(repo, cfg.products_file)
-    if not await repo.list_active_products():
-        log.warning("Keine aktiven Pakete: Wer kein Guthaben mehr hat, bekommt keinen Zahlungslink.")
+
+    payments: PaymentProvider | None = None
+    if cfg.mode == "chat":
+        if cfg.products_file:
+            await seed_products(repo, cfg.products_file)
+        if not await repo.list_active_products():
+            log.warning("Keine aktiven Pakete: Wer kein Guthaben mehr hat, bekommt keinen Zahlungslink.")
+        payments = make_payment_provider(cfg)
 
     llm = AsyncOpenAI(api_key=cfg.llm_api_key, base_url=cfg.llm_base_url)
     gateway = GatewayClient(cfg.gateway_url, cfg.gateway_token)
     await gateway.start()
-    payments = make_payment_provider(cfg)
 
     manager = ConversationManager(
         repo,
@@ -80,10 +95,14 @@ async def run(cfg: Config) -> int:
             cfg.persona,
             max_tokens=cfg.llm_max_tokens,
             temperature=cfg.llm_temperature,
+            catalog=catalog,
+            shop_name=cfg.shop_name,
+            catalog_prompt_limit=cfg.catalog_prompt_limit,
         ),
         FactExtractor(llm, cfg.fact_model),
         payments,
         cfg,
+        catalog,
     )
 
     runner = web.AppRunner(build_app(manager, payments, repo, cfg), access_log=None)
@@ -103,7 +122,8 @@ async def run(cfg: Config) -> int:
     log.info("Fahre herunter ...")
     await runner.cleanup()
     await manager.shutdown()
-    await payments.close()
+    if payments is not None:
+        await payments.close()
     await gateway.close()
     await llm.close()
     await repo.close()

@@ -5,13 +5,15 @@ werden gesammelt (Debounce) und mit einer einzigen Antwort beantwortet.
 
 Ablauf für einen Stapel Nachrichten:
     1. User anlegen/aktualisieren (Gratis-Guthaben beim ersten Kontakt)
-    2. Befehle (/stop, /start, /delete, /balance) direkt ausführen
+    2. Befehle (/stop, /start, /delete, im Chat-Modus auch /balance) direkt ausführen
     3. Textnachrichten im Verlauf speichern
     4. KI aus (/stop)?          -> nichts senden
     5. Erster Kontakt?          -> KI-Hinweis senden
-    6. Kein Guthaben?           -> Zahlungslink (mit Cooldown), sonst still
-    7. Antwort generieren, in Chunks zerlegen, über das Gateway senden
-    8. Alle FACT_EVERY Nachrichten Fakten im Hintergrund extrahieren
+    6. Tageslimit erreicht?     -> still
+    7. Chat-Modus ohne Guthaben -> Zahlungslink (mit Cooldown), sonst still
+    8. Antwort generieren, Links bereinigen, Produkt-IDs auflösen (Shop-Modus),
+       in Chunks zerlegen, über das Gateway senden
+    9. Alle FACT_EVERY Nachrichten Fakten im Hintergrund extrahieren
 """
 
 from __future__ import annotations
@@ -26,6 +28,7 @@ from typing import Any
 
 from botdb import BotRepository, Product
 
+from .catalog import Catalog, resolve_products, strip_urls
 from .config import Config
 from .facts import FactExtractor
 from .gateway_client import GatewayClient, GatewayError, GatewayPaused
@@ -36,6 +39,8 @@ from .payments import PaymentEvent, PaymentProvider, format_price
 log = logging.getLogger(__name__)
 
 _COMMAND_RE = re.compile(r"^/(stop|start|delete|balance)(?:@\w+)?(?:\s+(.*))?$", re.IGNORECASE)
+CHAT_COMMANDS = frozenset({"stop", "start", "delete", "balance"})
+SHOP_COMMANDS = frozenset({"stop", "start", "delete"})
 NOTICE_DELAY = 1.5  # Tipp-Dauer für Systemtexte (Hinweis, Zahlungslink, Befehle)
 
 
@@ -68,9 +73,9 @@ class Inbound:
         return cls(user_id, opt("username"), opt("first_name"), text, timestamp)
 
 
-def parse_command(text: str) -> tuple[str, str] | None:
+def parse_command(text: str, allowed: frozenset[str] = CHAT_COMMANDS) -> tuple[str, str] | None:
     match = _COMMAND_RE.match(text.strip())
-    if not match:
+    if not match or match.group(1).lower() not in allowed:
         return None
     return match.group(1).lower(), (match.group(2) or "").strip().lower()
 
@@ -91,15 +96,23 @@ class ConversationManager:
         gateway: GatewayClient,
         generator: ResponseGenerator,
         facts: FactExtractor,
-        payments: PaymentProvider,
+        payments: PaymentProvider | None,
         config: Config,
+        catalog: Catalog | None = None,
     ) -> None:
+        if config.mode == "chat" and payments is None:
+            raise ValueError("Im Chat-Modus wird ein Zahlungsanbieter gebraucht")
+        if config.mode == "shop" and catalog is None:
+            raise ValueError("Im Shop-Modus wird ein Katalog gebraucht")
         self._repo = repo
         self._gateway = gateway
         self._generator = generator
         self._facts = facts
         self._payments = payments
         self._cfg = config
+        self._catalog = catalog
+        self._shop = config.mode == "shop"
+        self._commands = SHOP_COMMANDS if self._shop else CHAT_COMMANDS
         self._states: dict[int, _UserState] = {}
         self._background: set[asyncio.Task] = set()
 
@@ -174,7 +187,7 @@ class ConversationManager:
             if msg is None:
                 resume = True
                 continue
-            command = parse_command(msg.text)
+            command = parse_command(msg.text, self._commands)
             if command is None:
                 await self._repo.add_message(user_id, "user", msg.text)
                 pending_text += 1
@@ -226,17 +239,25 @@ class ConversationManager:
                 return  # pausiert oder Gateway nicht erreichbar: später erneut versuchen
             await self._repo.mark_disclosed(user_id)
 
-        balance = await self._repo.consume_credit(user_id)
-        if balance is None:
-            await self._paywall(user_id)
-            return
+        if self._cfg.daily_reply_limit:
+            since = datetime.now(timezone.utc) - timedelta(days=1)
+            if await self._repo.count_replies_since(user_id, since) >= self._cfg.daily_reply_limit:
+                log.info("Tageslimit für User %s erreicht, keine Antwort", user_id)
+                return
+
+        charged = False
+        if not self._shop:
+            if await self._repo.consume_credit(user_id) is None:
+                await self._paywall(user_id)
+                return
+            charged = True
 
         sent = False
         try:
             ctx = await self._repo.get_user_context(user_id)
             history = await self._repo.get_recent_messages(user_id, self._cfg.history_limit)
             reply = await self._generator.generate(ctx, history)
-            plan = naturalize_response(reply)
+            plan = naturalize_response(self.render(reply))
             if not plan["chunks"]:
                 raise GenerationError("Antwort ergab keine sendbaren Chunks")
             await self._gateway.send(user_id, plan["chunks"], plan["delays"], wait=True)
@@ -247,12 +268,24 @@ class ConversationManager:
         except (GenerationError, GatewayError) as exc:
             log.error("Antwort an %s fehlgeschlagen: %s", user_id, exc)
         finally:
-            if not sent:
+            if charged and not sent:
                 # Guthaben zurück, auch bei Abbruch durch Shutdown
                 await asyncio.shield(self._refund(user_id))
 
         if sent:
             self._maybe_extract_facts(user_id, new_messages)
+
+    def render(self, reply: str) -> str:
+        """Macht aus der Modellantwort den Text, den der Nutzer sieht.
+
+        Links aus dem Modell werden immer entfernt. Im Shop-Modus werden [[id]] durch
+        Produktnamen ersetzt und die echten Links aus dem Katalog angehängt.
+        Im Verlauf bleibt die Rohantwort gespeichert, damit das Modell sein Format sieht.
+        """
+        text = strip_urls(reply)
+        if self._shop:
+            return resolve_products(text, self._catalog, max_links=self._cfg.max_links)
+        return resolve_products(text, None)  # Platzhalter entfernen, falls das Modell welche erfindet
 
     async def _refund(self, user_id: int) -> None:
         try:
@@ -288,6 +321,8 @@ class ConversationManager:
         if last is not None and datetime.now(timezone.utc) - last < cooldown:
             return  # Link wurde kürzlich geschickt, nicht nerven
 
+        if self._payments is None:
+            return
         product = await self._paywall_product()
         if product is None:
             log.error("Kein aktives Paket vorhanden, Bezahlschranke kann keinen Link senden")

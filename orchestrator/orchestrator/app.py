@@ -1,7 +1,7 @@
 """HTTP-Schnittstelle des Orchestrators.
 
 POST /inbound                   Events vom Telegram-Gateway (Bearer INBOUND_TOKEN)
-POST /payments/stripe/webhook   Stripe-Webhook (Stripe-Signatur)
+POST /payments/stripe/webhook   Stripe-Webhook (Stripe-Signatur), nur im Chat-Modus
 GET  /payments/dummy/{ref}      Testseite, nur mit PAYMENT_PROVIDER=dummy
 POST /payments/dummy/{ref}      Testzahlung abschließen, nur mit PAYMENT_PROVIDER=dummy
 GET  /health                    Lebenszeichen
@@ -27,7 +27,7 @@ log = logging.getLogger(__name__)
 
 def build_app(
     manager: ConversationManager,
-    payments: PaymentProvider,
+    payments: PaymentProvider | None,
     repo: BotRepository,
     config: Config,
 ) -> web.Application:
@@ -58,7 +58,7 @@ def build_app(
     async def stripe_webhook(request: web.Request) -> web.Response:
         body = await request.read()
         try:
-            event = payments.parse_webhook(body, request.headers)
+            event = payments.parse_webhook(body, request.headers)  # nur registriert, wenn payments gesetzt
         except InvalidWebhook as exc:
             log.warning("Ungültiger Webhook: %s", exc)
             return web.json_response({"error": "invalid signature"}, status=400)
@@ -103,8 +103,9 @@ def build_app(
 
     app = web.Application(client_max_size=512 * 1024)
     app.router.add_post("/inbound", inbound)
-    app.router.add_post("/payments/stripe/webhook", stripe_webhook)
     app.router.add_get("/health", health)
+    if payments is not None:
+        app.router.add_post("/payments/stripe/webhook", stripe_webhook)
     if isinstance(payments, DummyProvider):
         log.warning("PAYMENT_PROVIDER=dummy: Testzahlungen ohne echtes Geld sind aktiv!")
         app.router.add_get("/payments/dummy/{ref}", dummy_page)

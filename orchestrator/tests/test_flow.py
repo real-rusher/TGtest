@@ -1,11 +1,9 @@
 """Gesprächsablauf gegen echtes PostgreSQL, mit Fake-Gateway, -Modell und -Zahlung."""
 
 import asyncio
-from dataclasses import replace
 
 from orchestrator.config import DEFAULT_DISCLOSURE
 from orchestrator.conversation import ConversationManager, Inbound, parse_command
-from orchestrator.gateway_client import GatewayError
 from orchestrator.llm import GenerationError
 from orchestrator.payments import PaymentEvent
 
@@ -221,3 +219,78 @@ async def test_inbound_validierung():
             Inbound.from_payload(bad)
     msg = Inbound.from_payload(event(username=None, first_name=""))
     assert msg.username is None and msg.first_name is None
+
+
+# ------------------------------------------------------------------ Shop-Modus
+
+SHOP_ITEMS = [
+    {"id": "jacke-1", "name": "Winterjacke Nordlicht", "url": "https://shop.test/jacke", "price": "89,90 €"},
+    {"id": "muetze-2", "name": "Strickmütze", "url": "https://shop.test/muetze"},
+]
+
+
+def shop_manager(repo, parts, **overrides):
+    from orchestrator.catalog import Catalog
+
+    cfg = make_config(mode="shop", shop_name="Nordwind", free_credits=0, **overrides)
+    catalog = Catalog.from_list(SHOP_ITEMS, link_query="utm_source=telegram")
+    return ConversationManager(repo, parts.gateway, parts.generator, parts.facts, None, cfg, catalog)
+
+
+async def test_shop_ohne_guthaben_mit_produktlinks(repo, parts):
+    m = shop_manager(repo, parts)
+    parts.generator.replies = [
+        "Für den Winter würde ich [[jacke-1]] nehmen. Siehe auch https://fake.test/gratis!",
+        "Dann vielleicht [[gibtsnicht]] oder [[muetze-2]]",
+    ]
+    await say(m, "brauche was warmes")
+    texts = parts.gateway.texts()
+    assert texts[1] == (
+        "Für den Winter würde ich Winterjacke Nordlicht nehmen | "
+        "Winterjacke Nordlicht: https://shop.test/jacke?utm_source=telegram"
+    )
+    assert "fake.test" not in " ".join(texts)
+
+    await say(m, "und für den kopf?")
+    assert parts.gateway.texts()[-1] == "Dann vielleicht oder Strickmütze | Strickmütze: https://shop.test/muetze?utm_source=telegram"
+
+    user = await repo.get_user(42)
+    assert user.credits == 0  # Guthaben spielt keine Rolle
+    assert await repo.last_offer_at(42) is None  # keine Bezahlschranke
+    history = await repo.get_recent_messages(42)
+    assert history[1].content.startswith("Für den Winter würde ich [[jacke-1]]")  # Rohantwort im Verlauf
+    await m.shutdown()
+
+
+async def test_shop_befehle(repo, parts):
+    m = shop_manager(repo, parts)
+    await say(m, "/balance")  # kein Befehl im Shop: geht an die KI
+    assert len(parts.generator.calls) == 1
+    await say(m, "/delete")
+    assert "Guthaben" not in parts.gateway.texts()[-1] and "/delete confirm" in parts.gateway.texts()[-1]
+    await say(m, "/stop")
+    assert (await repo.get_user(42)).ai_enabled is False
+    await m.shutdown()
+
+
+async def test_shop_braucht_katalog_chat_braucht_zahlung(repo, parts):
+    import pytest
+
+    with pytest.raises(ValueError):
+        ConversationManager(repo, parts.gateway, parts.generator, parts.facts, None, make_config(mode="shop"))
+    with pytest.raises(ValueError):
+        ConversationManager(repo, parts.gateway, parts.generator, parts.facts, None, make_config())
+
+
+async def test_tageslimit(repo, parts):
+    m = shop_manager(repo, parts, daily_reply_limit=2)
+    for text in ("a", "b", "c", "d"):
+        await say(m, text)
+    assert len(parts.generator.calls) == 2
+    await m.shutdown()
+
+
+async def test_chat_modus_entfernt_links_aus_antworten(manager, parts):
+    parts.generator.replies = ["Klar! Schau auf www.irgendwas.test mal rein. Und [[x]] sonst?"]
+    await say(manager, "hi")
+    assert parts.gateway.texts()[-1] == "Klar! | Und sonst?"

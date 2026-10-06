@@ -138,6 +138,18 @@ async def test_chatverlauf_reihenfolge_und_limit(repo):
     assert [m.role for m in recent] == ["user", "assistant", "user", "assistant"]
 
 
+async def test_antworten_zaehlen(repo):
+    from datetime import datetime, timedelta, timezone
+
+    before = datetime.now(timezone.utc) - timedelta(seconds=1)
+    await repo.add_message(1, "user", "a")
+    await repo.add_message(1, "assistant", "b")
+    await repo.add_message(1, "assistant", "c")
+    assert await repo.count_replies_since(1, before) == 2
+    assert await repo.count_replies_since(1, datetime.now(timezone.utc) + timedelta(seconds=5)) == 0
+    assert await repo.count_replies_since(404, before) == 0
+
+
 async def test_chatverlauf_fehler(repo):
     with pytest.raises(InvalidMessage):
         await repo.add_message(1, "system", "x")

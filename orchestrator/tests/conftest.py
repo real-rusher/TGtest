@@ -15,7 +15,7 @@ import asyncpg
 import pytest
 import pytest_asyncio
 
-from orchestrator.config import Config
+from orchestrator.config import Config, Texts
 from orchestrator.conversation import ConversationManager
 from orchestrator.gateway_client import GatewayError, GatewayPaused
 from orchestrator.payments.dummy import DummyProvider
@@ -103,6 +103,8 @@ def make_config(**overrides) -> Config:
         public_base_url="https://example.test",
         offer_cooldown_hours=12,
     )
+    if "texts" not in overrides:
+        overrides["texts"] = Texts.for_mode(overrides.get("mode", "chat"))
     return replace(base, **overrides)
 
 

@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import os
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 
 try:
@@ -33,6 +33,19 @@ DEFAULT_DELETE_WARN = (
     "({balance} Antworten). Zum Bestätigen schick: /delete confirm"
 )
 DEFAULT_DELETE_DONE = "Erledigt, alle deine Daten sind gelöscht."
+
+# Shop-Modus: Werbung muss als solche erkennbar sein, daher nennt der Hinweis den Shop.
+DEFAULT_SHOP_DISCLOSURE = (
+    "Hallo! Hier antwortet der KI-Assistent von {shop_name} und hilft dir, das passende "
+    "Produkt zu finden. Damit ich mich an dich erinnere, werden deine Nachrichten gespeichert. "
+    "Mit /stop beendest du die Antworten, mit /delete löschst du alle deine Daten."
+)
+DEFAULT_SHOP_DELETE_WARN = (
+    "Das löscht deinen Chatverlauf und alles, was über dich gespeichert ist. "
+    "Zum Bestätigen schick: /delete confirm"
+)
+
+MODES = ("chat", "shop")
 
 
 def _get(name: str, default: str | None = None) -> str | None:
@@ -73,6 +86,13 @@ class Texts:
     delete_warn: str = DEFAULT_DELETE_WARN
     delete_done: str = DEFAULT_DELETE_DONE
 
+    @classmethod
+    def for_mode(cls, mode: str) -> "Texts":
+        """Standardtexte passend zum Modus."""
+        if mode == "shop":
+            return cls(disclosure=DEFAULT_SHOP_DISCLOSURE, delete_warn=DEFAULT_SHOP_DELETE_WARN)
+        return cls()
+
 
 @dataclass(frozen=True)
 class Config:
@@ -82,6 +102,7 @@ class Config:
     gateway_token: str
     persona: str
 
+    mode: str = "chat"  # chat: Guthaben + Zahlungslinks, shop: Produktberatung mit Katalog
     redis_url: str | None = None
     http_host: str = "0.0.0.0"
     http_port: int = 8090
@@ -97,6 +118,7 @@ class Config:
 
     history_limit: int = 30
     debounce_seconds: float = 3.0
+    daily_reply_limit: int = 0  # 0 = kein Limit
     free_credits: int = 20
 
     paywall_product_id: str | None = None
@@ -109,6 +131,12 @@ class Config:
     payment_success_url: str | None = None
     payment_cancel_url: str | None = None
     public_base_url: str | None = None
+
+    shop_name: str | None = None
+    catalog_file: str | None = None
+    link_query: str | None = None
+    catalog_prompt_limit: int = 40
+    max_links: int = 3
 
     texts: Texts = field(default_factory=Texts)
     log_level: str = "INFO"
@@ -123,17 +151,25 @@ class Config:
         if not persona:
             raise ConfigError("PERSONA_FILE ist leer.")
 
+        mode = (_get("BOT_MODE", "chat") or "chat").lower()
+        if mode not in MODES:
+            raise ConfigError(f"BOT_MODE muss chat oder shop sein, ist aber {mode!r}.")
+        shop_name = _get("SHOP_NAME")
+
+        d = Texts.for_mode(mode)
         texts = Texts(
-            disclosure=_text("TEXT_DISCLOSURE", DEFAULT_DISCLOSURE),
-            paywall=_text("TEXT_PAYWALL", DEFAULT_PAYWALL),
-            payment_confirm=_text("TEXT_PAYMENT_CONFIRM", DEFAULT_PAYMENT_CONFIRM),
-            stop=_text("TEXT_STOP", DEFAULT_STOP),
-            start=_text("TEXT_START", DEFAULT_START),
-            balance=_text("TEXT_BALANCE", DEFAULT_BALANCE),
-            delete_warn=_text("TEXT_DELETE_WARN", DEFAULT_DELETE_WARN),
-            delete_done=_text("TEXT_DELETE_DONE", DEFAULT_DELETE_DONE),
+            disclosure=_text("TEXT_DISCLOSURE", d.disclosure),
+            paywall=_text("TEXT_PAYWALL", d.paywall),
+            payment_confirm=_text("TEXT_PAYMENT_CONFIRM", d.payment_confirm),
+            stop=_text("TEXT_STOP", d.stop),
+            start=_text("TEXT_START", d.start),
+            balance=_text("TEXT_BALANCE", d.balance),
+            delete_warn=_text("TEXT_DELETE_WARN", d.delete_warn),
+            delete_done=_text("TEXT_DELETE_DONE", d.delete_done),
         )
-        if "{link}" not in texts.paywall:
+        if shop_name:
+            texts = replace(texts, disclosure=texts.disclosure.replace("{shop_name}", shop_name))
+        if mode == "chat" and "{link}" not in texts.paywall:
             raise ConfigError("TEXT_PAYWALL muss den Platzhalter {link} enthalten.")
 
         llm_model = _get("LLM_MODEL", "gpt-4o-mini")
@@ -143,6 +179,7 @@ class Config:
             gateway_url=_require("GATEWAY_URL").rstrip("/"),
             gateway_token=_require("GATEWAY_TOKEN"),
             persona=persona,
+            mode=mode,
             redis_url=_get("REDIS_URL"),
             http_host=_get("HTTP_HOST", "0.0.0.0"),
             http_port=_number("HTTP_PORT", "8090", int),
@@ -156,6 +193,7 @@ class Config:
             fact_window=_number("FACT_WINDOW", "20", int),
             history_limit=_number("HISTORY_LIMIT", "30", int),
             debounce_seconds=_number("DEBOUNCE_SECONDS", "3", float),
+            daily_reply_limit=_number("DAILY_REPLY_LIMIT", "0", int),
             free_credits=_number("FREE_CREDITS", "20", int),
             paywall_product_id=_get("PAYWALL_PRODUCT_ID"),
             offer_cooldown_hours=_number("OFFER_COOLDOWN_HOURS", "12", float),
@@ -166,6 +204,11 @@ class Config:
             payment_success_url=_get("PAYMENT_SUCCESS_URL"),
             payment_cancel_url=_get("PAYMENT_CANCEL_URL"),
             public_base_url=(_get("PUBLIC_BASE_URL") or "").rstrip("/") or None,
+            shop_name=shop_name,
+            catalog_file=_get("CATALOG_FILE"),
+            link_query=_get("LINK_QUERY"),
+            catalog_prompt_limit=_number("CATALOG_PROMPT_LIMIT", "40", int),
+            max_links=_number("MAX_LINKS", "3", int),
             texts=texts,
             log_level=(_get("LOG_LEVEL", "INFO") or "INFO").upper(),
         )
@@ -179,6 +222,19 @@ class Config:
             raise ConfigError("FREE_CREDITS darf nicht negativ sein.")
         if self.fact_every < 1:
             raise ConfigError("FACT_EVERY muss mindestens 1 sein.")
+        if self.daily_reply_limit < 0:
+            raise ConfigError("DAILY_REPLY_LIMIT darf nicht negativ sein (0 = kein Limit).")
+        if not self.texts.disclosure.strip():
+            raise ConfigError("Der KI-Hinweis darf nicht leer sein.")
+        if self.mode == "shop":
+            missing = [n for n, v in (("SHOP_NAME", self.shop_name), ("CATALOG_FILE", self.catalog_file)) if not v]
+            if missing:
+                raise ConfigError(f"Für BOT_MODE=shop fehlen: {', '.join(missing)}")
+            if "{shop_name}" in self.texts.disclosure:
+                raise ConfigError("TEXT_DISCLOSURE enthält {shop_name}, aber SHOP_NAME ist nicht gesetzt.")
+            if self.catalog_prompt_limit < 1 or self.max_links < 1:
+                raise ConfigError("CATALOG_PROMPT_LIMIT und MAX_LINKS müssen mindestens 1 sein.")
+            return  # Zahlungsanbieter wird im Shop-Modus nicht gebraucht
         if self.payment_provider == "stripe":
             missing = [
                 name

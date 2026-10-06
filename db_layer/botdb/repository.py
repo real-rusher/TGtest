@@ -305,6 +305,14 @@ class BotRepository:
         )
         return [ChatMessage(**dict(r)) for r in rows]
 
+    async def count_replies_since(self, user_id: int, since: datetime) -> int:
+        """Anzahl der KI-Antworten an diesen User seit `since` (für Tageslimits)."""
+        return await self._pool.fetchval(
+            "SELECT count(*) FROM messages WHERE user_id = $1 AND role = 'assistant' AND created_at >= $2",
+            user_id,
+            since,
+        )
+
     # ------------------------------------------------------------------ Guthaben
 
     async def consume_credit(self, user_id: int) -> int | None:

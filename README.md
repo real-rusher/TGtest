@@ -1,12 +1,18 @@
 # KI-Chat über Telegram
 
-Ein Telegram-Account, über den eine KI-Persona chattet. Nutzer bekommen ein Gratis-Kontingent an Antworten
-und können über externe Zahlungslinks Guthaben nachkaufen. Die KI merkt sich, was Nutzer über sich erzählen.
+Ein Telegram-Account, über den eine KI-Persona chattet. Ein Schalter in der `.env` legt fest, wofür:
+
+| `BOT_MODE` | Wofür | Geld |
+|---|---|---|
+| `chat` | KI-Chat als Produkt | Nutzer bekommen Gratis-Antworten und kaufen Guthaben über Zahlungslinks (Stripe) |
+| `shop` | Produktberatung für einen Online-Shop | Chatten ist gratis, die KI empfiehlt Produkte aus einem Katalog und verlinkt in den Shop |
+
+In beiden Modi merkt sich die KI, was Nutzer über sich erzählen, und schreibt beim ersten Kontakt einen KI-Hinweis.
 
 ```
  Telegram ◄──► telegram-gateway ──POST /inbound──► orchestrator ◄──► PostgreSQL / Redis
                     ▲    (Userbot)                      │    ▲
-                    └──────────POST /send───────────────┘    └── Stripe-Webhook
+                    └──────────POST /send───────────────┘    └── Stripe-Webhook (nur chat)
                                                         │
                                                    Sprachmodell
 ```
@@ -14,44 +20,48 @@ und können über externe Zahlungslinks Guthaben nachkaufen. Die KI merkt sich, 
 | Ordner | Aufgabe |
 |---|---|
 | `telegram-gateway/` | Telegram-Userbot: Nachrichten rein, Sendeaufträge mit Tipp-Status raus, `/pause` und `/resume` |
-| `orchestrator/` | Gesprächssteuerung, Antwort-Generator, Gedächtnis, Guthaben, Zahlungslinks |
+| `orchestrator/` | Gesprächssteuerung, Antwort-Generator, Gedächtnis, Guthaben, Zahlungslinks, Produktkatalog |
 | `db_layer/` | Datenbankschicht (`botdb`): Schema, Repository, Cache |
-| `config/` | Persona und Paketliste (Beispiele liegen bei) |
+| `config/` | Persona, Pakete (chat) oder Katalog (shop), Beispiele liegen bei |
 
 ## Ablauf einer Nachricht
 
 1. Das Gateway leitet die private Nachricht an `POST /inbound` weiter.
 2. Der Orchestrator sammelt kurz hintereinander geschickte Nachrichten (`DEBOUNCE_SECONDS`) und beantwortet sie gemeinsam.
 3. Beim ersten Kontakt geht zuerst der **KI-Hinweis** raus. Er lässt sich umformulieren, aber nicht abschalten.
-4. Pro Antwort wird 1 Guthaben abgezogen. Ist keins mehr da, kommt ein **Zahlungslink**, höchstens alle `OFFER_COOLDOWN_HOURS` Stunden.
-5. Die Antwort wird aus Persona, gespeicherten Fakten und Verlauf erzeugt, in kurze Nachrichten zerlegt und mit Tipp-Status verschickt.
-6. Alle `FACT_EVERY` Nachrichten extrahiert ein zweiter Modellaufruf dauerhafte Fakten über den Nutzer.
-7. Nach einer Zahlung bestätigt der Orchestrator den Eingang und beantwortet die zuletzt offene Nachricht.
+4. Ist das Tageslimit (`DAILY_REPLY_LIMIT`) erreicht, bleibt die KI still.
+5. **Nur chat:** Pro Antwort wird 1 Guthaben abgezogen. Ist keins mehr da, kommt ein Zahlungslink, höchstens alle `OFFER_COOLDOWN_HOURS` Stunden.
+6. Die Antwort wird aus Persona, gespeicherten Fakten und Verlauf erzeugt. Links, die das Modell selbst schreibt, werden immer entfernt.
+7. **Nur shop:** Die KI nennt Produkte als `[[id]]`. Der Orchestrator setzt den Produktnamen ein und hängt den echten Link aus dem Katalog an. Unbekannte IDs werden entfernt, das Modell kann also keine Produkte oder Links erfinden.
+8. Die Antwort wird in kurze Nachrichten zerlegt und mit Tipp-Status verschickt.
+9. Alle `FACT_EVERY` Nachrichten extrahiert ein zweiter Modellaufruf dauerhafte Fakten über den Nutzer.
 
-Schlägt etwas fehl (Modell, Gateway, `/pause` mitten im Senden, Shutdown), wird das Guthaben zurückgebucht.
+Schlägt im Chat-Modus etwas fehl (Modell, Gateway, `/pause` mitten im Senden, Shutdown), wird das Guthaben zurückgebucht.
 
 ### Befehle für Nutzer
 
-| Befehl | Wirkung |
-|---|---|
-| `/stop` | KI antwortet nicht mehr, Nachrichten werden weiter gespeichert |
-| `/start` | KI-Antworten wieder an |
-| `/balance` | Guthaben anzeigen |
-| `/delete` | Warnt und erklärt die Bestätigung |
-| `/delete confirm` | Löscht Profil, Fakten, Verlauf und Guthaben |
+| Befehl | Wirkung | Modus |
+|---|---|---|
+| `/stop` | KI antwortet nicht mehr, Nachrichten werden weiter gespeichert | beide |
+| `/start` | KI-Antworten wieder an | beide |
+| `/delete` | Warnt und erklärt die Bestätigung | beide |
+| `/delete confirm` | Löscht Profil, Fakten, Verlauf (und Guthaben) | beide |
+| `/balance` | Guthaben anzeigen | chat |
 
 ### Befehle für den Betreiber
 
-`/pause` und `/resume` im jeweiligen Chat (vom eigenen Account aus), siehe `telegram-gateway/README.md`.
+`/pause` und `/resume` im jeweiligen Chat (vom Bot-Account aus), siehe `telegram-gateway/README.md`.
 Während einer Pause schreibst du selbst, die KI bleibt still.
 
 ## Einrichtung
 
 Voraussetzung: ein Server mit Docker und Docker Compose.
 
-1. `.env.example` nach `.env` kopieren und ausfüllen.
-2. `config/persona.example.md` nach `config/persona.md` kopieren und die Persona beschreiben.
-3. `config/products.example.json` nach `config/products.json` kopieren und Pakete anpassen. Die Datei wird bei jedem Start übernommen.
+1. Passende Vorlage nach `.env` kopieren und ausfüllen: `.env.chat.example` oder `.env.shop.example`.
+2. Persona anlegen: `config/persona.chat.example.md` oder `config/persona.shop.example.md` nach `config/persona.md` kopieren und anpassen.
+3. **chat:** `config/products.example.json` nach `config/products.json` kopieren und Pakete anpassen.
+   **shop:** `config/catalog.example.json` nach `config/catalog.json` kopieren und mit den Produkten des Shops füllen.
+   Beide Dateien werden bei jedem Start neu eingelesen.
 4. Telegram einmalig einloggen (fragt Telefonnummer, Code und ggf. 2FA-Passwort):
    ```
    docker compose run --rm gateway python login.py
@@ -62,19 +72,54 @@ Voraussetzung: ein Server mit Docker und Docker Compose.
    docker compose logs -f orchestrator gateway
    ```
 
-### Zahlungen
+Änderungen an `.env`, Persona, Paketen oder Katalog übernimmst du mit `docker compose restart orchestrator`.
+
+### Katalog (shop)
+
+```json
+[
+  {
+    "id": "jacke-nordlicht",
+    "name": "Winterjacke Nordlicht",
+    "url": "https://shop.example/produkte/winterjacke-nordlicht",
+    "price": "189,00 €",
+    "description": "Daunenjacke bis -20 °C",
+    "tags": ["winter", "jacke"],
+    "featured": true
+  }
+]
+```
+
+Pflicht sind `id`, `name` und `url`. Bei bis zu `CATALOG_PROMPT_LIMIT` Produkten sieht die KI den ganzen Katalog,
+bei mehr nur die zur Anfrage passendsten (nach Name, Stichworten und Beschreibung). `featured` bevorzugt ein Produkt,
+wenn nichts eindeutig passt. `LINK_QUERY` wird an jeden Link gehängt, z. B. für UTM-Parameter.
+
+### Zahlungen (chat)
 
 **Stripe:** Im Stripe-Dashboard einen Webhook auf `https://<deine-domain>/payments/stripe/webhook` anlegen, mit den Events
 `checkout.session.completed` und `checkout.session.async_payment_succeeded`. Das Signing Secret kommt in `STRIPE_WEBHOOK_SECRET`.
-Der Orchestrator lauscht nur auf `127.0.0.1:8090`. Davor gehört ein Reverse Proxy mit HTTPS (z. B. Caddy), der nur `/payments/` nach außen freigibt.
+Das Geld landet auf dem Stripe-Konto des `STRIPE_SECRET_KEY`.
+Der Orchestrator lauscht nur auf `127.0.0.1`. Davor gehört ein Reverse Proxy mit HTTPS (z. B. Caddy), der nur `/payments/` nach außen freigibt.
 
 **Test ohne Geld:** `PAYMENT_PROVIDER=dummy` und `PUBLIC_BASE_URL` setzen. Der Zahlungslink führt dann auf eine Testseite
 mit einem Knopf, der die Zahlung sofort verbucht. Niemals produktiv verwenden.
+
+### Mehrere Klienten auf einem Server
+
+Jeder Klient bekommt einen eigenen Ordner mit eigenem Clone, eigener `.env`, eigenem Telegram-Account und eigener `config/`.
+In jeder `.env` einen eigenen `COMPOSE_PROJECT_NAME` und `ORCHESTRATOR_PORT` setzen. Dann hat jeder Klient eigene
+Container und eine eigene Datenbank, nichts wird geteilt.
 
 ### Sprachmodell
 
 Funktioniert mit jedem OpenAI-kompatiblen Endpunkt (`LLM_BASE_URL`, `LLM_MODEL`). Die Fakten-Extraktion braucht
 Structured Outputs (`json_schema`), dafür kann mit `FACT_MODEL` ein anderes Modell gewählt werden.
+
+### Texte
+
+Alle Systemtexte stehen als `TEXT_...` in der `.env`. Leer heißt: Standardtext des Modus. Die Standardtexte selbst
+stehen in `orchestrator/orchestrator/config.py`. Feste Regeln für jede Antwort (kurz schreiben, kein Markdown,
+ehrlich sagen, dass hier eine KI schreibt) stehen in `orchestrator/orchestrator/llm.py`.
 
 ## Tests
 
@@ -93,11 +138,13 @@ GitHub Actions führt alles bei jedem Push aus (`.github/workflows/tests.yml`).
 
 - **Altersprüfung**: noch nicht umgesetzt.
 - **Auslieferung digitaler Inhalte**: noch nicht umgesetzt, Pakete schreiben bisher nur Guthaben gut.
-- **Rechtliches**: Datenschutzerklärung (Verlauf und Fakten werden gespeichert), Impressum, AGB, Widerrufsbelehrung für digitale Inhalte.
+- **Rechtliches**: Datenschutzerklärung (Verlauf und Fakten werden gespeichert), Impressum, AGB, Widerrufsbelehrung.
+  Im Shop-Modus muss erkennbar sein, dass ein Assistent des Shops schreibt (der Standard-Hinweis nennt `SHOP_NAME`).
   Der Zahlungsanbieter verlangt einen verifizierten Kontoinhaber.
 
 ## Bekannte Grenzen
 
 - Was du während `/pause` von Hand schreibst, landet nicht im Verlauf. Die KI kennt diese Nachrichten nach `/resume` nicht.
 - Nach `/delete confirm` gilt ein Nutzer beim nächsten Kontakt als neu und bekommt erneut das Gratis-Kontingent.
+- Der Katalog kommt aus einer Datei. Eine direkte Anbindung an Shopify oder WooCommerce gibt es noch nicht.
 - Telegram geht gegen automatisierte Nutzer-Accounts vor, besonders bei unaufgeforderten Nachrichten. Das System antwortet nur, es schreibt niemanden von sich aus an.

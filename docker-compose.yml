@@ -1,5 +1,5 @@
 # Gesamtsystem: Telegram-Gateway, Orchestrator, PostgreSQL, Redis.
-# Einrichtung siehe README.md.
+# Modus (chat oder shop) und alles Weitere steht in der .env. Einrichtung siehe README.md.
 
 services:
   postgres:
@@ -31,14 +31,14 @@ services:
       DATABASE_URL: postgresql://bot:${POSTGRES_PASSWORD}@postgres:5432/bot
       REDIS_URL: redis://redis:6379/0
       GATEWAY_URL: http://gateway:8080
-      PERSONA_FILE: /config/persona.md
-      PRODUCTS_FILE: /config/products.json
       HTTP_HOST: 0.0.0.0
       HTTP_PORT: "8090"
     volumes:
       - ./config:/config:ro
     ports:
-      - "127.0.0.1:8090:8090"   # Reverse Proxy davor setzen, nur /payments/ öffentlich machen
+      # Reverse Proxy davor setzen, nur /payments/ öffentlich machen.
+      # Mehrere Klienten auf einem Server: unterschiedliche ORCHESTRATOR_PORT in der .env
+      - "127.0.0.1:${ORCHESTRATOR_PORT:-8090}:8090"
     depends_on:
       postgres:
         condition: service_healthy

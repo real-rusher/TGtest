@@ -6,7 +6,8 @@ import pytest
 
 from botdb import ChatMessage, Memory, User, UserContext
 from orchestrator.facts import FactExtractor, format_transcript, normalize_facts
-from orchestrator.llm import BASE_RULES, GenerationError, ResponseGenerator
+from orchestrator.catalog import Catalog
+from orchestrator.llm import CHAT_RULES, HONESTY_RULES, STYLE_RULES, GenerationError, ResponseGenerator
 
 from conftest import FakeLLM, completion
 
@@ -39,10 +40,35 @@ def test_prompt_enthaelt_persona_regeln_und_fakten():
     gen = ResponseGenerator(FakeLLM(), "m", "Du bist Mia.")
     prompt = gen.system_prompt(ctx())
     assert prompt.startswith("Du bist Mia.")
-    assert BASE_RULES in prompt
+    assert STYLE_RULES in prompt and CHAT_RULES in prompt and HONESTY_RULES in prompt
     assert "Behaupte nie, ein Mensch zu sein" in prompt
+    assert "KATALOG" not in prompt
     assert prompt.index("wohnt in Köln") < prompt.index("fährt Motorrad")
     assert "- Vorname: Max" in prompt
+
+
+CATALOG = Catalog.from_list([
+    {"id": "jacke-1", "name": "Winterjacke Nordlicht", "url": "https://shop.test/jacke", "price": "89,90 €",
+     "description": "Warm und wasserdicht", "tags": ["winter", "jacke"]},
+    {"id": "muetze-2", "name": "Strickmütze", "url": "https://shop.test/muetze", "tags": ["winter"]},
+    {"id": "shorts-3", "name": "Laufshorts", "url": "https://shop.test/shorts", "tags": ["sommer", "laufen"]},
+])
+
+
+def test_shop_prompt_mit_katalog_und_regeln():
+    gen = ResponseGenerator(FakeLLM(), "m", "Du bist Tom.", catalog=CATALOG, shop_name="Nordwind")
+    prompt = gen.system_prompt(ctx(), [msg(1, "user", "brauche was für den winter")])
+    assert "PRODUKTBERATUNG FÜR Nordwind" in prompt and "{shop_name}" not in prompt
+    assert "[[jacke-1]] Winterjacke Nordlicht | 89,90 € | Warm und wasserdicht | Stichworte: winter, jacke" in prompt
+    assert CHAT_RULES not in prompt and HONESTY_RULES in prompt
+    assert "Auswahl" not in prompt  # kleiner Katalog kommt komplett
+
+
+def test_shop_prompt_waehlt_passende_produkte():
+    gen = ResponseGenerator(FakeLLM(), "m", "P", catalog=CATALOG, catalog_prompt_limit=1)
+    prompt = gen.system_prompt(ctx(), [msg(1, "user", "suche shorts zum laufen")])
+    assert "Laufshorts" in prompt and "Winterjacke" not in prompt
+    assert "(Auswahl passend zur Anfrage)" in prompt
 
 
 def test_aufeinanderfolgende_rollen_werden_zusammengefasst():

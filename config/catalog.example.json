@@ -1,0 +1,35 @@
+[
+  {
+    "id": "jacke-nordlicht",
+    "name": "Winterjacke Nordlicht",
+    "url": "https://shop.example/produkte/winterjacke-nordlicht",
+    "price": "189,00 €",
+    "description": "Daunenjacke bis -20 °C, wasserabweisend, mit Kapuze",
+    "tags": ["winter", "jacke", "warm", "daune"],
+    "featured": true
+  },
+  {
+    "id": "schuh-gipfel",
+    "name": "Wanderschuh Gipfel GTX",
+    "url": "https://shop.example/produkte/wanderschuh-gipfel",
+    "price": "149,00 €",
+    "description": "Wasserdichter Bergschuh mit Vibram-Sohle, für Tagestouren und Mehrtagestouren",
+    "tags": ["wandern", "schuhe", "berg", "wasserdicht"]
+  },
+  {
+    "id": "socken-merino",
+    "name": "Merino-Wandersocken (2er-Pack)",
+    "url": "https://shop.example/produkte/merino-socken",
+    "price": "24,90 €",
+    "description": "Gepolstert, geruchshemmend, für lange Touren",
+    "tags": ["wandern", "socken", "merino"]
+  },
+  {
+    "id": "muetze-strick",
+    "name": "Strickmütze Fjell",
+    "url": "https://shop.example/produkte/strickmuetze-fjell",
+    "price": "29,00 €",
+    "description": "Wollmütze mit Fleecefutter",
+    "tags": ["winter", "mütze", "warm"]
+  }
+]
