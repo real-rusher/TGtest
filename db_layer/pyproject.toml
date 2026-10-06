@@ -1,0 +1,24 @@
+[project]
+name = "botdb"
+version = "1.0.0"
+requires-python = ">=3.11"
+dependencies = ["asyncpg>=0.29", "redis>=5.0"]
+
+[project.optional-dependencies]
+test = ["pytest>=8", "pytest-asyncio>=0.23"]
+
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools]
+packages = ["botdb"]
+
+[tool.setuptools.package-data]
+botdb = ["schema.sql"]
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+asyncio_default_fixture_loop_scope = "function"
+pythonpath = ["."]
+testpaths = ["tests"]
