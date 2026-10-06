@@ -1,0 +1,11 @@
+services:
+  telegram-gateway:
+    build: .
+    env_file: .env
+    environment:
+      HTTP_HOST: 0.0.0.0
+    volumes:
+      - ./data:/app/data
+    ports:
+      - "127.0.0.1:8080:8080"   # nur lokal erreichbar
+    restart: unless-stopped
