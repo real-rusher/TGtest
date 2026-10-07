@@ -71,7 +71,7 @@ class PurchaseEntry:
     id: UUID
     product_id: str
     title: str
-    price_stars: int
+    price_stars: int | None  # None: Produkt wird nicht per Stars verkauft
     status: str  # 'offered' | 'purchased'
     updated_at: datetime
 
@@ -81,7 +81,7 @@ class PurchaseEntry:
             id=UUID(str(d["id"])),
             product_id=d["product_id"],
             title=d["title"],
-            price_stars=int(d["price_stars"]),
+            price_stars=None if d["price_stars"] is None else int(d["price_stars"]),
             status=d["status"],
             updated_at=_dt(d["updated_at"]),
         )
@@ -117,6 +117,16 @@ class UserContext:
 class PurchaseResult:
     entry: PurchaseEntry
     newly_purchased: bool  # False, wenn das Produkt schon vorher gekauft war
+
+
+@dataclass(frozen=True, slots=True)
+class ChatMessage:
+    """Eine Nachricht aus dem gespeicherten Chatverlauf."""
+
+    id: int
+    role: str  # 'user' | 'assistant'
+    content: str
+    created_at: datetime
 
 
 @dataclass(frozen=True, slots=True)

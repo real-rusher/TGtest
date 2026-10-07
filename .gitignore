@@ -1,0 +1,10 @@
+.env
+.env.tmp
+data/
+*.session
+*.session-journal
+__pycache__/
+.pytest_cache/
+.venv/
+*.egg-info/
+build/

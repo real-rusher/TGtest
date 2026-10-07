@@ -150,3 +150,59 @@ async def test_schema_mehrfach_anwendbar(repo):
     await repo.init_schema()
     await repo.init_schema()
     assert (await repo.get_user_context(1)) is not None
+
+
+# ---------------------------------------------------------------- Erweiterungen fuer den Bot-Core
+
+
+async def test_produkt_ohne_stars_preis(repo):
+    await repo.upsert_product("link_only", "Nur per Link", None, "Zahlung extern")
+    assert (await repo.get_product("link_only"))["price_stars"] is None
+    await repo.record_purchase(1, "link_only")
+    ctx = await repo.get_user_context(1)
+    assert ctx.purchases[0].price_stars is None
+    assert ctx == await repo.get_user_context(1)  # Cache-Roundtrip mit None
+
+
+async def test_deactivate_products_except(repo):
+    assert await repo.deactivate_products_except(["guide"]) == 1
+    assert [p["product_id"] for p in await repo.list_active_products()] == ["guide"]
+    assert (await repo.get_product("pack"))["is_active"] is False
+
+
+async def test_try_offer_mit_sperrzeit(repo):
+    assert await repo.try_offer(1, "guide", cooldown_seconds=3600) is True
+    assert await repo.try_offer(1, "guide", cooldown_seconds=3600) is False  # zu frueh
+    assert await repo.try_offer(1, "guide", cooldown_seconds=0) is True  # Sperrzeit vorbei
+    await repo.record_purchase(1, "guide")
+    assert await repo.try_offer(1, "guide", cooldown_seconds=0) is False  # gekauft: nie wieder
+    with pytest.raises(ProductNotFound):
+        await repo.try_offer(1, "gibtsnicht", 0)
+
+
+async def test_chatverlauf(repo):
+    ids = [await repo.add_message(1, role, text) for role, text in
+           [("user", "hi"), ("assistant", "hey"), ("user", "wie gehts"), ("user", "?")]]
+    assert ids == sorted(ids)
+    last = await repo.recent_messages(1, limit=3)
+    assert [m.content for m in last] == ["hey", "wie gehts", "?"]
+    with pytest.raises(ValueError):
+        await repo.add_message(1, "system", "x")
+    with pytest.raises(UserNotFound):
+        await repo.add_message(404, "user", "x")
+
+
+async def test_mark_disclosed_nur_einmal(repo):
+    assert await repo.mark_disclosed(1) is True
+    assert await repo.mark_disclosed(1) is False
+
+
+async def test_zahlung_idempotent_und_erstattung(repo):
+    assert await repo.record_payment("ch_1", "stars", 1, "guide", 50, "XTR") is True
+    assert await repo.record_payment("ch_1", "stars", 1, "guide", 50, "XTR") is False
+    await repo.record_purchase(1, "guide")
+    assert (await repo.get_payment("ch_1"))["amount"] == 50
+    assert await repo.mark_refunded("ch_1") is True
+    assert await repo.mark_refunded("ch_1") is False
+    ctx = await repo.get_user_context(1)
+    assert ctx.purchases == [] and ctx.open_offers[0].product_id == "guide"

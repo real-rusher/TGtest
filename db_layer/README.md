@@ -1,5 +1,8 @@
 # botdb: Datenbankschicht (Builder 2)
 
+> **Teil des Gesamtpakets.** Erweitert um Chatverlauf (`messages`), Zahlungen (`payments`),
+> Angebots-Sperrzeit (`try_offer`) und KI-Hinweis (`mark_disclosed`). Anleitung: `README.md` im Hauptordner.
+
 PostgreSQL Schema, Redis Cache und ein kapselndes Repository fuer den Telegram Bot.
 Asynchron (asyncpg + redis.asyncio), passt also direkt zu aiogram oder python-telegram-bot.
 

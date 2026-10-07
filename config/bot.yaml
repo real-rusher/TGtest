@@ -1,0 +1,93 @@
+# =============================================================================
+#  BOT-KONFIGURATION
+#
+#  Hier wird festgelegt, WIE sich der Bot verhält: Persönlichkeit, Schreibstil,
+#  KI-Hinweis, Zahlungsart und Produkte.
+#
+#  API-Keys, Passwörter und Tokens gehören NICHT hierher, sondern in die Datei .env
+#
+#  Fertige Beispiele: examples/roleplay.yaml und examples/sales.yaml
+#  Nach jeder Änderung neu starten:  docker compose restart core
+# =============================================================================
+
+bot:
+  name: "Mia"                     # nur für Logs
+
+# -----------------------------------------------------------------------------
+# Persona: Wer ist der Bot? Das ist der wichtigste Teil.
+# Schreib in ganzen Sätzen, wie du es einer Person erklären würdest:
+# Name, Charakter, Tonfall, Themen, was der Bot nicht tun soll.
+# -----------------------------------------------------------------------------
+persona: |
+  Du bist Mia, 27, und schreibst entspannt und freundlich, wie unter Freunden.
+  Du duzt dein Gegenüber, stellst gern Rückfragen und merkst dir, was erzählt wird.
+  Du antwortest auf Deutsch, außer dein Gegenüber schreibt in einer anderen Sprache.
+  Bleib bei Themen des Alltags. Bei medizinischen, rechtlichen oder finanziellen
+  Fragen sagst du, dass du da keine verlässliche Auskunft geben kannst.
+
+# Antwort auf /start (wenn jemand den Bot zum ersten Mal öffnet).
+# Leer lassen ("") = die KI antwortet selbst.
+start_message: "Hey! Schön, dass du da bist. Wie geht's dir?"
+
+# -----------------------------------------------------------------------------
+# Schreibverhalten
+# -----------------------------------------------------------------------------
+style:
+  reply_delay_seconds: 4     # wartet so lange, ob noch weitere Nachrichten kommen
+  typing_speed: 1.0          # Tipp-Dauer: 1.0 = normal, 0.5 = doppelt so schnell, 0 = sofort
+  max_delay_seconds: 20      # höchstens so lange "tippt..." pro Nachricht (max. 120)
+  history_messages: 30       # so viele letzte Nachrichten sieht die KI
+
+# -----------------------------------------------------------------------------
+# KI-Hinweis
+#   first_message: Bei der ersten Antwort an einen User wird einmalig der Text
+#                  unten mitgeschickt.
+#   off:           kein automatischer Hinweis (z. B. wenn der Hinweis schon in der
+#                  Bot-Beschreibung bei Telegram steht).
+# Unabhängig davon streitet der Bot nie ab, eine KI zu sein, wenn ihn jemand
+# ernsthaft danach fragt.
+# -----------------------------------------------------------------------------
+disclosure:
+  mode: first_message
+  text: "Kurzer Hinweis: Du schreibst hier mit einem KI-Assistenten."
+
+# -----------------------------------------------------------------------------
+# Gedächtnis: Der Bot merkt sich dauerhafte Fakten (Wohnort, Hobbys, ...).
+# -----------------------------------------------------------------------------
+memory:
+  enabled: true
+  extract_every: 4           # nach jeweils so vielen Nachrichten des Users
+
+# -----------------------------------------------------------------------------
+# Zahlungen
+#   none:   der Bot verkauft nichts
+#   stars:  Telegram Stars (nur mit TELEGRAM_MODE=bot), Preis: price_stars
+#   stripe: Stripe Payment Links, Preis steht im Link, dazu STRIPE_WEBHOOK_SECRET in .env
+#   link:   beliebiger Bezahllink (Shop, Digistore, Ko-fi, PayPal, ...); Freischaltung per
+#           Webhook oder von Hand (/admin/grant), siehe README
+# -----------------------------------------------------------------------------
+payments:
+  method: none
+  offer_cooldown_hours: 168  # dasselbe Produkt frühestens nach so vielen Stunden erneut anbieten
+  # Text unter dem Angebot (nicht bei stars, dort kommt eine Telegram-Rechnung).
+  # Platzhalter: {title} {price} {description} {link}
+  offer_text: "{title} ({price})\n{link}"
+
+# -----------------------------------------------------------------------------
+# Produkte (nur relevant, wenn payments.method nicht "none" ist)
+# Die KI sieht id, title, price_label und description und bietet passende
+# Produkte im Gespräch an. Dateien liegen im Ordner config/content/.
+# -----------------------------------------------------------------------------
+products: []
+#  - id: rezeptbuch                 # nur Buchstaben, Ziffern und _
+#    title: "Rezeptbuch"
+#    description: "30 schnelle Feierabendrezepte als PDF"
+#    price_label: "4,99 €"           # Anzeigepreis für KI und Angebotstext
+#    price_stars: 250                # nur bei method: stars
+#    stripe_link: "https://buy.stripe.com/..."   # nur bei method: stripe
+#    link: "https://dein-shop.de/kaufen/rezeptbuch?ref={ref}"   # nur bei method: link
+#    deliver:                        # wird nach der Zahlung geschickt
+#      - file: rezeptbuch.pdf        # Datei aus config/content/
+#        caption: "Viel Spaß beim Kochen!"
+#      - text: "Bei Fragen schreib mir einfach."
+#    thank_you: "Danke dir! 🙏"

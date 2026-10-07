@@ -1,0 +1,12 @@
+# HTTPS-Zugang für Zahlungs-Webhooks und Admin-Befehle.
+# Caddy holt das Zertifikat automatisch (Let's Encrypt), sobald DOMAIN in .env
+# gesetzt ist und die Domain per DNS auf diesen Server zeigt.
+{$DOMAIN} {
+	@public path /webhooks/* /admin/* /health
+	handle @public {
+		reverse_proxy core:8000
+	}
+	handle {
+		respond 404
+	}
+}

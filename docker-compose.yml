@@ -1,0 +1,119 @@
+# Gesamter Bot als ein Docker-Compose-Projekt.
+# Alle Einstellungen kommen aus der Datei .env (Vorlage: .env.example).
+#
+#   Starten:      docker compose up -d --build
+#   Logs:         docker compose logs -f
+#   Stoppen:      docker compose down
+#
+# Dienste:
+#   telegram  Verbindung zu Telegram. TELEGRAM_MODE=bot  -> Ordner telegram-bot (Bot-Account)
+#                                     TELEGRAM_MODE=userbot -> Ordner telegram-userbot (normaler Account)
+#   core      KI, Gedächtnis, Angebote, Zahlungen
+#   postgres  Datenbank
+#   redis     Zwischenspeicher
+#   caddy     optional: HTTPS für Zahlungs-Webhooks und Admin (COMPOSE_PROFILES=https)
+
+name: telegram-ki-bot
+
+services:
+  telegram:
+    build: ./telegram-${TELEGRAM_MODE:-bot}
+    environment:
+      TG_API_ID: ${TG_API_ID:?TG_API_ID fehlt in .env}
+      TG_API_HASH: ${TG_API_HASH:?TG_API_HASH fehlt in .env}
+      TG_BOT_TOKEN: ${TG_BOT_TOKEN:-}
+      ADMIN_IDS: ${ADMIN_IDS:-}
+      # telegram-bot
+      INBOUND_URL: http://core:8000/inbound
+      PAYMENT_URL: http://core:8000/payment
+      INBOUND_TOKEN: ${INTERNAL_TOKEN:?INTERNAL_TOKEN fehlt in .env}
+      OUTBOUND_TOKEN: ${INTERNAL_TOKEN}
+      # telegram-userbot
+      INBOUND_WEBHOOK_URL: http://core:8000/inbound
+      INBOUND_WEBHOOK_TOKEN: ${INTERNAL_TOKEN}
+      API_TOKEN: ${INTERNAL_TOKEN}
+      # beide
+      HTTP_HOST: 0.0.0.0
+      HTTP_PORT: "8080"
+      MAX_DELAY: "120"
+      CONTENT_DIR: /app/content
+      LOG_LEVEL: ${LOG_LEVEL:-INFO}
+    volumes:
+      - telegram_data:/app/data          # Telegram-Login, nicht löschen
+      - ./config/content:/app/content:ro
+    restart: unless-stopped
+
+  core:
+    build:
+      context: .
+      dockerfile: core/Dockerfile
+    environment:
+      TELEGRAM_MODE: ${TELEGRAM_MODE:-bot}
+      TRANSPORT_URL: http://telegram:8080
+      INTERNAL_TOKEN: ${INTERNAL_TOKEN}
+      LLM_PROVIDER: ${LLM_PROVIDER:-anthropic}
+      LLM_API_KEY: ${LLM_API_KEY:-}
+      LLM_MODEL: ${LLM_MODEL:-}
+      LLM_BASE_URL: ${LLM_BASE_URL:-}
+      LLM_EFFORT: ${LLM_EFFORT:-low}
+      LLM_FALLBACKS: ${LLM_FALLBACKS:-true}
+      LLM_MAX_TOKENS: ${LLM_MAX_TOKENS:-8000}
+      FACTS_MODEL: ${FACTS_MODEL:-}
+      ADMIN_TOKEN: ${ADMIN_TOKEN:-}
+      PAYMENT_WEBHOOK_TOKEN: ${PAYMENT_WEBHOOK_TOKEN:-}
+      STRIPE_WEBHOOK_SECRET: ${STRIPE_WEBHOOK_SECRET:-}
+      DATABASE_URL: postgresql://bot:${POSTGRES_PASSWORD:?POSTGRES_PASSWORD fehlt in .env}@postgres:5432/bot
+      REDIS_URL: redis://redis:6379/0
+      LOG_LEVEL: ${LOG_LEVEL:-INFO}
+    volumes:
+      - ./config:/app/config:ro
+    extra_hosts:
+      - "host.docker.internal:host-gateway"   # erlaubt ein lokales Modell (z. B. Ollama) auf dem Server
+    ports:
+      - "127.0.0.1:${CORE_PORT:-8000}:8000"   # nur lokal; öffentlich nur über caddy
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_started
+    restart: unless-stopped
+
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: bot
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+      POSTGRES_DB: bot
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U bot -d bot"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+    restart: unless-stopped
+
+  redis:
+    image: redis:7-alpine
+    command: ["redis-server", "--save", "", "--appendonly", "no"]   # reiner Cache
+    restart: unless-stopped
+
+  caddy:
+    image: caddy:2-alpine
+    profiles: ["https"]
+    environment:
+      DOMAIN: ${DOMAIN:-}
+    volumes:
+      - ./deploy/Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data
+    ports:
+      - "80:80"
+      - "443:443"
+    depends_on:
+      - core
+    restart: unless-stopped
+
+volumes:
+  telegram_data:
+  postgres_data:
+  caddy_data:

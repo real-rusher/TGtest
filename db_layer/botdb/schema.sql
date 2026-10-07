@@ -38,7 +38,7 @@ CREATE TABLE IF NOT EXISTS products (
     product_id   VARCHAR(64)   PRIMARY KEY,
     title        VARCHAR(255)  NOT NULL,
     description  TEXT          NOT NULL DEFAULT '',
-    price_stars  INTEGER       NOT NULL CHECK (price_stars > 0),
+    price_stars  INTEGER       CHECK (price_stars IS NULL OR price_stars > 0),  -- NULL: nicht per Stars kaeuflich
     file_ids     JSONB         NOT NULL DEFAULT '[]'::jsonb CHECK (jsonb_typeof(file_ids) = 'array'),
     is_active    BOOLEAN       NOT NULL DEFAULT TRUE
 );
@@ -55,3 +55,40 @@ CREATE TABLE IF NOT EXISTS offers_and_purchases (
 
 CREATE INDEX IF NOT EXISTS idx_offers_user_status
     ON offers_and_purchases (user_id, status);
+
+-- ---------------------------------------------------------------------------
+-- Erweiterungen fuer den Bot-Core (idempotent, auch fuer bestehende Datenbanken)
+-- ---------------------------------------------------------------------------
+
+-- Produkte ohne Stars-Preis zulassen (Zahlung per Link oder manuell)
+ALTER TABLE products ALTER COLUMN price_stars DROP NOT NULL;
+ALTER TABLE products DROP CONSTRAINT IF EXISTS products_price_stars_check;
+ALTER TABLE products ADD CONSTRAINT products_price_stars_check
+    CHECK (price_stars IS NULL OR price_stars > 0);
+
+-- Zeitpunkt, an dem der KI-Hinweis an den User ging (NULL = noch nie)
+ALTER TABLE users ADD COLUMN IF NOT EXISTS disclosed_at TIMESTAMPTZ;
+
+-- Chatverlauf als Gedaechtnis fuer das Sprachmodell
+CREATE TABLE IF NOT EXISTS messages (
+    id          BIGSERIAL     PRIMARY KEY,
+    user_id     BIGINT        NOT NULL REFERENCES users (telegram_id) ON DELETE CASCADE,
+    role        VARCHAR(16)   NOT NULL CHECK (role IN ('user', 'assistant')),
+    content     TEXT          NOT NULL,
+    created_at  TIMESTAMPTZ   NOT NULL DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS idx_messages_user_id ON messages (user_id, id DESC);
+
+-- Eingegangene Zahlungen. payment_id ist die Kennung des Anbieters
+-- (Telegram charge_id, Stripe Checkout Session, ...) und verhindert Doppelbuchungen.
+CREATE TABLE IF NOT EXISTS payments (
+    payment_id  VARCHAR(255)  PRIMARY KEY,
+    provider    VARCHAR(32)   NOT NULL,
+    user_id     BIGINT        NOT NULL REFERENCES users (telegram_id) ON DELETE CASCADE,
+    product_id  VARCHAR(64)   NOT NULL REFERENCES products (product_id) ON DELETE RESTRICT,
+    amount      INTEGER,
+    currency    VARCHAR(16),
+    refunded    BOOLEAN       NOT NULL DEFAULT FALSE,
+    created_at  TIMESTAMPTZ   NOT NULL DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS idx_payments_user ON payments (user_id);

@@ -1,0 +1,3 @@
+Beispieldatei für die Auslieferung.
+Lege hier die Dateien ab, die nach einem Kauf verschickt werden (PDF, Bilder, Videos, ...),
+und trage sie in config/bot.yaml unter products -> deliver -> file ein.

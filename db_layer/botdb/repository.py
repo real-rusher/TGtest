@@ -21,7 +21,7 @@ from redis.asyncio import Redis
 
 from .cache import ContextCache
 from .errors import InvalidFact, ProductNotFound, UserNotFound
-from .models import Memory, MemoryResult, PurchaseEntry, PurchaseResult, User, UserContext
+from .models import ChatMessage, Memory, MemoryResult, PurchaseEntry, PurchaseResult, User, UserContext
 
 log = logging.getLogger(__name__)
 
@@ -270,7 +270,7 @@ class BotRepository:
         self,
         product_id: str,
         title: str,
-        price_stars: int,
+        price_stars: int | None,
         description: str = "",
         file_ids: list[str] | None = None,
         is_active: bool = True,
@@ -303,3 +303,128 @@ class BotRepository:
             "FROM products WHERE is_active ORDER BY title"
         )
         return [dict(r) for r in rows]
+
+    async def deactivate_products_except(self, keep_ids: list[str]) -> int:
+        """Deaktiviert alle Produkte, die nicht in keep_ids stehen (z. B. aus der Konfiguration entfernt).
+
+        Gibt die Zahl der deaktivierten Produkte zurueck. Kaeufe bleiben erhalten.
+        """
+        result = await self._pool.execute(
+            "UPDATE products SET is_active = false WHERE is_active AND NOT (product_id = ANY($1::text[]))",
+            list(keep_ids),
+        )
+        return int(result.rsplit(" ", 1)[-1])
+
+    async def try_offer(self, user_id: int, product_id: str, cooldown_seconds: int) -> bool:
+        """Vermerkt ein Angebot, wenn es erlaubt ist.
+
+        Erlaubt ist es, wenn das Produkt nie angeboten wurde oder das letzte Angebot
+        laenger als cooldown_seconds her ist. Gekaufte Produkte werden nie erneut angeboten.
+        Rueckgabe: True, wenn das Angebot jetzt rausgehen darf.
+        """
+        try:
+            allowed = await self._pool.fetchval(
+                "INSERT INTO offers_and_purchases (user_id, product_id, status) VALUES ($1, $2, 'offered') "
+                "ON CONFLICT (user_id, product_id) DO UPDATE SET updated_at = now() "
+                "  WHERE offers_and_purchases.status = 'offered' "
+                "  AND offers_and_purchases.updated_at < now() - make_interval(secs => $3::double precision) "
+                "RETURNING true",
+                user_id,
+                product_id,
+                float(cooldown_seconds),
+            )
+        except asyncpg.ForeignKeyViolationError as exc:
+            raise _fk_error(exc, user_id, product_id) from exc
+        if allowed:
+            await self._cache.invalidate(user_id)
+        return bool(allowed)
+
+    # ------------------------------------------------------------------ Chatverlauf
+
+    async def add_message(self, user_id: int, role: str, content: str) -> int:
+        """Speichert eine Chatnachricht und gibt ihre fortlaufende id zurueck."""
+        if role not in ("user", "assistant"):
+            raise ValueError("role muss 'user' oder 'assistant' sein")
+        try:
+            return await self._pool.fetchval(
+                "INSERT INTO messages (user_id, role, content) VALUES ($1, $2, $3) RETURNING id",
+                user_id,
+                role,
+                content,
+            )
+        except asyncpg.ForeignKeyViolationError as exc:
+            raise _fk_error(exc, user_id) from exc
+
+    async def recent_messages(self, user_id: int, limit: int = 30) -> list[ChatMessage]:
+        """Die letzten `limit` Nachrichten, aelteste zuerst."""
+        rows = await self._pool.fetch(
+            "SELECT id, role, content, created_at FROM ("
+            "  SELECT id, role, content, created_at FROM messages WHERE user_id = $1 ORDER BY id DESC LIMIT $2"
+            ") t ORDER BY id",
+            user_id,
+            limit,
+        )
+        return [ChatMessage(**dict(r)) for r in rows]
+
+    async def mark_disclosed(self, user_id: int) -> bool:
+        """Vermerkt, dass der KI-Hinweis gesendet wurde. True nur beim ersten Mal."""
+        done = await self._pool.fetchval(
+            "UPDATE users SET disclosed_at = now() WHERE telegram_id = $1 AND disclosed_at IS NULL RETURNING true",
+            user_id,
+        )
+        return bool(done)
+
+    # ------------------------------------------------------------------ Zahlungen
+
+    async def record_payment(
+        self,
+        payment_id: str,
+        provider: str,
+        user_id: int,
+        product_id: str,
+        amount: int | None = None,
+        currency: str | None = None,
+    ) -> bool:
+        """Speichert eine Zahlung. False, wenn payment_id schon bekannt ist (Doppelzustellung)."""
+        try:
+            created = await self._pool.fetchval(
+                "INSERT INTO payments (payment_id, provider, user_id, product_id, amount, currency) "
+                "VALUES ($1, $2, $3, $4, $5, $6) ON CONFLICT (payment_id) DO NOTHING RETURNING true",
+                payment_id,
+                provider,
+                user_id,
+                product_id,
+                amount,
+                currency,
+            )
+        except asyncpg.ForeignKeyViolationError as exc:
+            raise _fk_error(exc, user_id, product_id) from exc
+        return bool(created)
+
+    async def get_payment(self, payment_id: str) -> dict[str, Any] | None:
+        row = await self._pool.fetchrow(
+            "SELECT payment_id, provider, user_id, product_id, amount, currency, refunded, created_at "
+            "FROM payments WHERE payment_id = $1",
+            payment_id,
+        )
+        return dict(row) if row else None
+
+    async def mark_refunded(self, payment_id: str) -> bool:
+        """Markiert eine Zahlung als erstattet und nimmt den Kauf zurueck (Status wieder 'offered')."""
+        async with self._pool.acquire() as conn:
+            async with conn.transaction():
+                row = await conn.fetchrow(
+                    "UPDATE payments SET refunded = true WHERE payment_id = $1 AND NOT refunded "
+                    "RETURNING user_id, product_id",
+                    payment_id,
+                )
+                if row is None:
+                    return False
+                await conn.execute(
+                    "UPDATE offers_and_purchases SET status = 'offered', updated_at = now() "
+                    "WHERE user_id = $1 AND product_id = $2",
+                    row["user_id"],
+                    row["product_id"],
+                )
+        await self._cache.invalidate(row["user_id"])
+        return True

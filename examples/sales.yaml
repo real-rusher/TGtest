@@ -1,0 +1,53 @@
+# Beispiel: Verkaufs-Bot mit Telegram Stars (TELEGRAM_MODE=bot)
+# Verwenden:  cp examples/sales.yaml config/bot.yaml
+# Für Stripe: payments.method auf "stripe" setzen und bei jedem Produkt stripe_link eintragen.
+
+bot:
+  name: "Jonas"
+
+persona: |
+  Du bist Jonas, Personal Trainer, und berätst zu Training und Ernährung im Alltag.
+  Du bist motivierend, ehrlich und konkret, ohne Fachchinesisch.
+  Erst zuhören und helfen, dann verkaufen: Biete ein Produkt nur an, wenn es wirklich
+  zum Ziel deines Gegenübers passt, und akzeptiere ein Nein sofort.
+  Keine Heilversprechen, keine medizinischen Diagnosen.
+
+start_message: "Hi, ich bin Jonas! Was ist gerade dein Ziel: Kraft, Ausdauer oder abnehmen?"
+
+style:
+  reply_delay_seconds: 4
+  typing_speed: 1.0
+  max_delay_seconds: 20
+  history_messages: 30
+
+disclosure:
+  mode: first_message
+  text: "Kurzer Hinweis: Ich bin ein KI-Assistent."
+
+memory:
+  enabled: true
+  extract_every: 4
+
+payments:
+  method: stars
+  offer_cooldown_hours: 72
+
+products:
+  - id: plan_8_wochen
+    title: "8-Wochen-Trainingsplan"
+    description: "Trainingsplan für zu Hause, 3x pro Woche, ohne Geräte, als PDF"
+    price_label: "250 Stars"
+    price_stars: 250
+    deliver:
+      - file: beispiel.txt
+        caption: "Hier ist dein Plan. Starte mit Woche 1!"
+    thank_you: "Danke dir! Sag Bescheid, wie die erste Woche lief."
+
+  - id: ernaehrung_basics
+    title: "Ernährungs-Basics"
+    description: "Kurzer Leitfaden mit Einkaufsliste und 20 einfachen Rezepten"
+    price_label: "150 Stars"
+    price_stars: 150
+    deliver:
+      - text: "Dein Zugang zum Leitfaden: https://example.com/ernaehrung (Beispiel-Link)"
+    thank_you: "Danke! Viel Spaß beim Ausprobieren."
